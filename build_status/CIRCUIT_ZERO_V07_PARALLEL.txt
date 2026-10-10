@@ -1,0 +1,3 @@
+result=running
+run_id=38092457266
+run_url=https://github.com/otaviomanderchiche-max/Otavio/actions/runs/38092457266
