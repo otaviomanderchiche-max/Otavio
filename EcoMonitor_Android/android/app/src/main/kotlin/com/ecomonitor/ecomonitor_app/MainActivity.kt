@@ -45,7 +45,7 @@ class MainActivity : FlutterActivity() {
                 "connect" -> withPermissions(result) { connect(result) }
                 "bindExisting" -> withPermissions(result) { bindExisting(result) }
                 "disconnect" -> {
-                    release()
+                    releaseConnection()
                     result.success(true)
                 }
                 "openWifiSettings" -> {
@@ -168,7 +168,7 @@ class MainActivity : FlutterActivity() {
             return
         }
         if (boundNetwork != null) { result.success(true); return }
-        release()
+        releaseConnection()
         try {
             val specifier = WifiNetworkSpecifier.Builder()
                 .setSsid(ssidEsperado)
@@ -193,7 +193,7 @@ class MainActivity : FlutterActivity() {
                     handler.post {
                         connecting?.error("CONNECT_FAILED", "Rede indisponível ou não autorizada.", null)
                         connecting = null
-                        release()
+                        releaseConnection()
                     }
                 }
                 override fun onLost(network: Network) {
@@ -212,7 +212,7 @@ class MainActivity : FlutterActivity() {
             manager.requestNetwork(request, cb, 35000)
         } catch (e: Exception) {
             connecting = null
-            release()
+            releaseConnection()
             result.error("CONNECT_FAILED", e.message ?: "Falha ao conectar.", null)
         }
     }
@@ -236,7 +236,7 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) { result.success(false) }
     }
 
-    private fun release() {
+    private fun releaseConnection() {
         try { manager.bindProcessToNetwork(null) } catch (_: Exception) {}
         try { callback?.let { manager.unregisterNetworkCallback(it) } } catch (_: Exception) {}
         callback = null
@@ -245,7 +245,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        release()
+        releaseConnection()
         super.onDestroy()
     }
 }
