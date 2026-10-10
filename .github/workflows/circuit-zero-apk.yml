@@ -3,9 +3,14 @@ on:
   push:
     branches:
       - circuit-zero-android-beta-v07
+    paths-ignore:
+      - build_status/CIRCUIT_ZERO_V07.txt
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: circuit-zero-beta-v07
+  cancel-in-progress: true
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -44,3 +49,20 @@ jobs:
           name: CIRCUIT_ZERO_Origin_Beta_07_Android
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+      - name: Record result and run URL
+        if: always()
+        run: |
+          mkdir -p build_status
+          {
+            echo "result=${{ job.status }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "run_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "commit=${{ github.sha }}"
+          } > build_status/CIRCUIT_ZERO_V07.txt
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add build_status/CIRCUIT_ZERO_V07.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "ci(circuit-zero): record Android 0.7 build result [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
