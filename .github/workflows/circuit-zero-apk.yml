@@ -1,8 +1,8 @@
-name: CIRCUIT ZERO · Android APK
+name: CIRCUIT ZERO · Android APK 0.7
 on:
   push:
     branches:
-      - circuit-zero-android-beta-v06
+      - circuit-zero-android-beta-v07
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,34 +13,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Instalar Java 17
+      - name: Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: Preparar Flutter
+      - name: Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-      - name: Extrair código-fonte Flutter
+      - name: Extract CIRCUIT ZERO 0.7 Dart source
         run: |
-          tar -xJf circuit_zero_src.tar.xz
+          base64 --decode circuit_zero_v07_src.b64 | tar -xJf -
           test -f lib/main.dart
-          test -f pubspec.yaml
-      - name: Gerar arquivos de plataforma Android
+          test -f test/game_engine_test.dart
+      - name: Generate Android platform scaffolding
         run: flutter create --platforms=android --project-name circuit_zero --org com.circuitzero .
-      - name: Instalar dependências
+      - name: Install dependencies
         run: flutter pub get
-      - name: Verificar código do CIRCUIT ZERO
+      - name: Analyze Flutter code
         run: flutter analyze --no-fatal-infos lib test/game_engine_test.dart
-      - name: Executar testes do CIRCUIT ZERO
+      - name: Test gameplay
         run: flutter test test/game_engine_test.dart
-      - name: Compilar APK release
+      - name: Build Android APK release
         run: flutter build apk --release
-      - name: Publicar APK
+      - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: CIRCUIT_ZERO_Origin_Beta_06_Android
+          name: CIRCUIT_ZERO_Origin_Beta_07_Android
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
