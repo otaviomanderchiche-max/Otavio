@@ -1,4 +1,4 @@
-result=running
+result=success
 run_id=38092049248
 run_url=https://github.com/otaviomanderchiche-max/Otavio/actions/runs/38092049248
 commit=0182a2805775067ea9c6816282168b068d3d3bbf
