@@ -1,0 +1,56 @@
+name: Gerar APK EcoMonitor
+
+on:
+  push:
+    paths:
+      - 'EcoMonitor_Android/**'
+      - '.github/workflows/ecomonitor-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gerar-apk:
+    name: Compilar Flutter Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Instalar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Criar estrutura Android
+        shell: bash
+        run: |
+          flutter create --platforms android --android-language kotlin --project-name ecomonitor_app --org com.ecomonitor /tmp/ecomonitor_build
+          cp EcoMonitor_Android/pubspec.yaml /tmp/ecomonitor_build/pubspec.yaml
+          cp EcoMonitor_Android/lib/main.dart /tmp/ecomonitor_build/lib/main.dart
+          cp EcoMonitor_Android/android/app/src/main/AndroidManifest.xml /tmp/ecomonitor_build/android/app/src/main/AndroidManifest.xml
+          cp EcoMonitor_Android/android/app/src/main/kotlin/com/ecomonitor/ecomonitor_app/MainActivity.kt /tmp/ecomonitor_build/android/app/src/main/kotlin/com/ecomonitor/ecomonitor_app/MainActivity.kt
+          if [ -f /tmp/ecomonitor_build/android/app/build.gradle.kts ]; then
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 29/' /tmp/ecomonitor_build/android/app/build.gradle.kts
+          else
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 29/' /tmp/ecomonitor_build/android/app/build.gradle
+          fi
+      - name: Gerar APK
+        working-directory: /tmp/ecomonitor_build
+        run: |
+          flutter pub get
+          flutter build apk --debug
+          cp build/app/outputs/flutter-apk/app-debug.apk "$GITHUB_WORKSPACE/EcoMonitor.apk"
+      - name: Arquivo para instalar no celular
+        uses: actions/upload-artifact@v4
+        with:
+          name: EcoMonitor-APK-Android
+          path: EcoMonitor.apk
+          retention-days: 30
+          if-no-files-found: error
