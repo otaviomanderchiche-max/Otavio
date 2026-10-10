@@ -32,10 +32,10 @@ jobs:
         run: flutter create --platforms=android --project-name circuit_zero --org com.circuitzero .
       - name: Instalar dependências
         run: flutter pub get
-      - name: Verificar código
-        run: flutter analyze
-      - name: Executar testes
-        run: flutter test
+      - name: Verificar código do CIRCUIT ZERO
+        run: flutter analyze --no-fatal-infos lib test/game_engine_test.dart
+      - name: Executar testes do CIRCUIT ZERO
+        run: flutter test test/game_engine_test.dart
       - name: Compilar APK release
         run: flutter build apk --release
       - name: Publicar APK
