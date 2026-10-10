@@ -18,6 +18,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Announce run for monitoring
+        run: |
+          mkdir -p build_status
+          {
+            echo "result=running"
+            echo "run_id=${{ github.run_id }}"
+            echo "run_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "commit=${{ github.sha }}"
+          } > build_status/CIRCUIT_ZERO_V07.txt
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add build_status/CIRCUIT_ZERO_V07.txt
+          git commit -m "ci(circuit-zero): announce Android build [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
       - name: Java 17
         uses: actions/setup-java@v4
         with:
