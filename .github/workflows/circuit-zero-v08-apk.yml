@@ -1,0 +1,48 @@
+name: CIRCUIT ZERO Android Beta 0.8 APK
+on:
+  push:
+    branches: [circuit-zero-android-beta-v08]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Extract Flutter game source
+        shell: bash
+        run: |
+          base64 -d circuit_zero_v08_source.b64 > /tmp/circuit_zero_v08.zip
+          unzip -q /tmp/circuit_zero_v08.zip
+          test -f CIRCUIT_ZERO_ANDROID_V08/lib/main.dart
+      - name: Create Android platform
+        working-directory: CIRCUIT_ZERO_ANDROID_V08
+        run: flutter create --platforms=android --project-name circuit_zero --org com.circuitzero .
+      - name: Dependencies
+        working-directory: CIRCUIT_ZERO_ANDROID_V08
+        run: flutter pub get
+      - name: Analyze
+        working-directory: CIRCUIT_ZERO_ANDROID_V08
+        run: flutter analyze --no-fatal-infos lib test/game_engine_test.dart
+      - name: Test
+        working-directory: CIRCUIT_ZERO_ANDROID_V08
+        run: flutter test test/game_engine_test.dart
+      - name: Build release APK
+        working-directory: CIRCUIT_ZERO_ANDROID_V08
+        run: flutter build apk --release
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CIRCUIT_ZERO_Android_Beta_08_APK
+          path: CIRCUIT_ZERO_ANDROID_V08/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
