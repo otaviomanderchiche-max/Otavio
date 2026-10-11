@@ -4,7 +4,7 @@ on:
     branches: [circuit-zero-android-beta-v08]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -46,3 +46,18 @@ jobs:
           name: CIRCUIT_ZERO_Android_Beta_08_APK
           path: CIRCUIT_ZERO_ANDROID_V08/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+
+      - name: Publicar APK em link direto
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APK="CIRCUIT_ZERO_Android_Beta_08.apk"
+          cp CIRCUIT_ZERO_ANDROID_V08/build/app/outputs/flutter-apk/app-release.apk "$APK"
+          sha256sum "$APK"
+          if gh release view "circuit-zero-v0.8" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "circuit-zero-v0.8" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "circuit-zero-v0.8" "$APK" --target "$GITHUB_SHA" --title "CIRCUIT ZERO Android Beta 0.8" --notes "APK Android gerado automaticamente pelo GitHub Actions após análise e testes Flutter." --prerelease --repo "$GITHUB_REPOSITORY"
+          fi
