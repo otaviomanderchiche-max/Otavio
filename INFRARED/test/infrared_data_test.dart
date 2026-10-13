@@ -29,4 +29,31 @@ void main() {
     expect(sample?.temp, 31.4);
     expect(ThermalSample.fromList([1]), null);
   });
+
+
+  test('alertas: recupera diferenca, pixels, horario e sessao', () {
+    final alert=ThermalAlert.fromJson({
+      'id': 12, 'sessao': 3, 'tempo_ms': 222000,
+      'epoch_ms': 1791891200000, 'ambiente_c': 28.0,
+      'pico_c': 32.4, 'delta_c': 4.4,
+      'pixel_x':4,'pixel_y':3,'pixels_quentes':6,
+    });
+    expect(alert.id,12);
+    expect(alert.session,3);
+    expect(alert.ms,222000);
+    expect(alert.delta,4.4);
+    expect(alert.localTime,isNotNull);
+    expect(alert.x,4);
+    expect(alert.y,3);
+  });
+
+  test('sem sincronizacao: uptime persiste, data fica ausente', () {
+    final alert=ThermalAlert.fromJson({
+      'id':1,'sessao':1,'tempo_ms':4300,'epoch_ms':0,
+      'ambiente_c':28,'pico_c':32,'delta_c':4,
+      'pixel_x':0,'pixel_y':0,'pixels_quentes':3
+    });
+    expect(alert.localTime,isNull);
+    expect(alert.ms,4300);
+  });
 }

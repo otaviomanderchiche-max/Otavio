@@ -115,8 +115,16 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
   final InfraredApi _api = InfraredApi();
   Timer? _refreshTimer;
   Timer? _historyTimer;
+  Timer? _alertsTimer;
+  Timer? _noticeTimer;
   ThermalFrame? _frame;
   List<ThermalSample> _history = [];
+  List<ThermalAlert> _alerts = [];
+  bool _alertsLoading = false;
+  bool _alertsInitialized = false;
+  int _lastSeenAlertId = 0;
+  ThermalAlert? _noticeAlert;
+  late final Future<void> _seenReady;
   bool _connected = false;
   bool _connecting = false;
   bool _polling = false;
@@ -133,6 +141,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _seenReady = _loadSeenAlerts();
     // Se o aparelho ja esta na rede do ESP32, abre o painel sozinho.
     WidgetsBinding.instance.addPostFrameCallback((_) => _probeExisting());
   }
@@ -140,7 +149,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      if (_connected) { _poll(); _syncRecent(); }
+      if (_connected) { _poll(); _syncRecent(); _syncAlerts(); }
       else if (!_connecting) { _probeExisting(); }
     }
   }
@@ -148,7 +157,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _refreshTimer?.cancel(); _historyTimer?.cancel();
+    _refreshTimer?.cancel(); _historyTimer?.cancel(); _alertsTimer?.cancel(); _noticeTimer?.cancel();
     _api.close();
     super.dispose();
   }
@@ -193,16 +202,20 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
 
   Future<void> _onConnected(ThermalFrame frame) async {
     if (!mounted) return;
-    _refreshTimer?.cancel(); _historyTimer?.cancel();
+    _refreshTimer?.cancel(); _historyTimer?.cancel(); _alertsTimer?.cancel();
     setState(() {
       _connected = true; _connecting = false; _frame = frame;
       _status = 'Conectado ao ESP32'; _failures = 0;
       _lastUpdate = DateTime.now();
     });
-    _api.setClock(); // Sincroniza a hora do computador/celular, sem bloquear o painel.
+    // Sincroniza antes de consultar eventos, inclusive os anteriores ao app abrir.
+    await _api.setClock();
+    if(!mounted) return;
     _loadHistory();
+    _syncAlerts(initial:true);
     _refreshTimer = Timer.periodic(const Duration(milliseconds: 600), (_) => _poll());
     _historyTimer = Timer.periodic(const Duration(seconds: 3), (_) => _syncRecent());
+    _alertsTimer = Timer.periodic(const Duration(seconds: 2), (_) => _syncAlerts());
   }
 
   Future<void> _poll() async {
@@ -261,6 +274,178 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
         }
       });
     } catch (_) { /* Pode estar indisponivel durante reinicializacao. */ }
+  }
+
+  Future<File> _seenFile() async {
+    final dir=await getApplicationDocumentsDirectory();
+    return File('${dir.path}/infrared_alertas_lidos.txt');
+  }
+
+  Future<void> _loadSeenAlerts() async {
+    try {
+      final file=await _seenFile();
+      if(await file.exists()) {
+        final n=int.tryParse((await file.readAsString()).trim()) ?? 0;
+        if(mounted) setState(() => _lastSeenAlertId=n);
+      }
+    } catch (_) { /* marcador local opcional */ }
+  }
+
+  Future<void> _markAlertsRead() async {
+    if(_alerts.isEmpty) return;
+    final maxId=_alerts.last.id;
+    if(maxId <= _lastSeenAlertId) return;
+    setState(()=>_lastSeenAlertId=maxId);
+    try { await (await _seenFile()).writeAsString('$maxId',flush:true); }
+    catch (_) { /* registros continuam salvos no ESP32 */ }
+  }
+
+  int get _unreadCount => _alerts.where((a) => a.id > _lastSeenAlertId).length;
+
+  Future<void> _syncAlerts({bool initial=false}) async {
+    if (!_connected || _alertsLoading) return;
+    _alertsLoading=true;
+    try {
+      await _seenReady;
+      final lastId = _alerts.isEmpty ? 0 : _alerts.last.id;
+      final incoming = await _api.readAlerts(afterId:lastId);
+      if (!mounted) return;
+      if (incoming.isNotEmpty) {
+        final fresh=incoming.where((a) => a.id > lastId).toList();
+        setState(() {
+          _alerts.addAll(fresh);
+          _alerts.sort((a,b)=>a.id.compareTo(b.id));
+        });
+        // Nunca exibe um popup para alertas antigos recebidos na primeira conexao.
+        if (!initial && _alertsInitialized && fresh.isNotEmpty) {
+          final newest=fresh.last;
+          final recentByTime=newest.epochMs > 0 &&
+            DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(newest.epochMs)).inSeconds.abs() < 15;
+          final recentByUptime=_frame != null && newest.session==_frame!.session &&
+            _frame!.ms >= newest.ms && (_frame!.ms - newest.ms) <= 15000;
+          final recent=recentByTime || recentByUptime;
+          if (recent) {
+            _noticeTimer?.cancel();
+            setState(()=>_noticeAlert=newest);
+            _noticeTimer=Timer(const Duration(seconds:5),(){
+              if(mounted)setState(()=>_noticeAlert=null);
+            });
+          }
+        }
+      }
+      _alertsInitialized=true;
+    } catch (_) { /* firmware anterior pode nao ter /alertas */ }
+    finally {_alertsLoading=false;}
+  }
+
+  String _alertDate(ThermalAlert event) {
+    final dt=event.localTime;
+    if(dt==null)return 'Sem data/hora sincronizada';
+    String two(int x)=>x.toString().padLeft(2,'0');
+    return '${two(dt.day)}/${two(dt.month)}/${dt.year}  '
+      '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+  }
+
+  void _openAlerts() {
+    _markAlertsRead();
+    showModalBottomSheet<void>(context:context,isScrollControlled:true,
+      backgroundColor:C.surface,showDragHandle:true,
+      builder:(context)=>FractionallySizedBox(heightFactor:.82,
+        child:SafeArea(child:Padding(padding:const EdgeInsets.fromLTRB(20,10,20,18),
+          child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+            Row(children:[
+              const Icon(Icons.notifications_active_outlined,color:C.red),
+              const SizedBox(width:10),
+              const Expanded(child:Text('Alertas térmicos',style:TextStyle(
+                fontSize:21,fontWeight:FontWeight.w800))),
+              IconButton(onPressed:()=>Navigator.pop(context),icon:const Icon(Icons.close)),
+            ]),
+            const SizedBox(height:6),
+            Text('${_alerts.length} ocorrências registradas no ESP32',
+              style:const TextStyle(color:C.muted,fontSize:12)),
+            const SizedBox(height:14),
+            Expanded(child:_alerts.isEmpty
+              ? const Center(child:Text('Nenhuma diferença térmica confirmada.',
+                  style:TextStyle(color:C.muted)))
+              :ListView.separated(itemCount:_alerts.length,reverse:true,
+                separatorBuilder:(_,__)=>const SizedBox(height:8),
+                itemBuilder:(context,index) {
+                  final event=_alerts[_alerts.length-1-index];
+                  return Container(padding:const EdgeInsets.all(14),
+                    decoration:BoxDecoration(color:C.surface2,
+                      border:Border.all(color:C.border),
+                      borderRadius:BorderRadius.circular(14)),
+                    child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+                      Row(children:[const Icon(Icons.thermostat_auto,color:C.red,size:19),
+                        const SizedBox(width:8),
+                        Expanded(child:Text('Variação +${event.delta.toStringAsFixed(1)} °C',
+                          style:const TextStyle(fontWeight:FontWeight.w800))),
+                        Text('#${event.id}',style:const TextStyle(color:C.muted,fontSize:11))]),
+                      const SizedBox(height:7),
+                      Text(_alertDate(event),style:const TextStyle(fontWeight:FontWeight.w700)),
+                      const SizedBox(height:4),
+                      Text('Desde a inicialização: ${clock(event.ms)} · sessão ${event.session}',
+                        style:const TextStyle(color:C.muted,fontSize:12)),
+                      Text('Ambiente: ${fmt(event.ambient,'°C')}  |  '
+                        'Pico: ${fmt(event.peak,'°C')}',
+                        style:const TextStyle(color:C.muted,fontSize:12)),
+                      Text('Pixel (${event.x}, ${event.y}) · ${event.hotPixels} pixels quentes',
+                        style:const TextStyle(color:C.muted,fontSize:12)),
+                    ]));
+                })),
+            const SizedBox(height:12),
+            SizedBox(height:49,child:OutlinedButton.icon(onPressed:(){
+              Navigator.pop(context); _exportAlertsCsv();
+            },icon:const Icon(Icons.download),
+              label:const Text('BAIXAR HISTÓRICO DE ALERTAS CSV'))),
+          ])))),
+    );
+  }
+
+  Future<void> _exportAlertsCsv() async {
+    if (!_connected || _exporting) return;
+    setState(()=>_exporting=true);
+    try {
+      final bytes=await _api.getAlertsCsv();
+      final name='INFRARED_alertas_${DateTime.now().millisecondsSinceEpoch}.csv';
+      if(Platform.isWindows) {
+        final dir=await getDownloadsDirectory()??await getApplicationDocumentsDirectory();
+        final file=File('${dir.path}/$name');
+        await file.writeAsBytes(bytes,flush:true);
+        if(mounted)_toast('Alertas salvos em: ${file.path}');
+      } else {
+        final dir=await getTemporaryDirectory();
+        final file=File('${dir.path}/$name');
+        await file.writeAsBytes(bytes,flush:true);
+        await SharePlus.instance.share(ShareParams(
+          files:[XFile(file.path,mimeType:'text/csv')],
+          subject:'Alertas térmicos do INFRARED'));
+      }
+    } catch(e) {if(mounted)_toast('Falha ao exportar alertas: ${_message(e)}');}
+    finally {if(mounted)setState(()=>_exporting=false);}
+  }
+
+  Widget _alertNoticeCard() {
+    final event=_noticeAlert;
+    if(event==null)return const SizedBox.shrink();
+    return Padding(padding:const EdgeInsets.only(top:14,bottom:5),
+      child:Material(color:C.red.withValues(alpha:.14),
+        borderRadius:BorderRadius.circular(15),
+        child:InkWell(onTap:_openAlerts,borderRadius:BorderRadius.circular(15),
+          child:Container(padding:const EdgeInsets.all(14),
+            decoration:BoxDecoration(border:Border.all(color:C.red.withValues(alpha:.55)),
+              borderRadius:BorderRadius.circular(15)),
+            child:Row(children:[
+              const Icon(Icons.warning_amber_rounded,color:C.red),
+              const SizedBox(width:12),
+              Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+                const Text('VARIAÇÃO TÉRMICA DETECTADA',
+                  style:TextStyle(color:C.red,fontWeight:FontWeight.w900,fontSize:12)),
+                Text('+${event.delta.toStringAsFixed(1)} °C acima do ambiente · '
+                  '${_alertDate(event)}',style:const TextStyle(fontSize:12)),
+              ])),
+              const Icon(Icons.chevron_right,color:C.red),
+            ])))));
   }
 
   Future<void> _exportCsv() async {
@@ -375,7 +560,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
             textAlign: TextAlign.center,
             style: TextStyle(color: C.muted, fontSize: 11, height: 1.5)),
           const SizedBox(height: 34),
-          Text('INFRARED  /  V1.1  ·  ${Platform.isWindows ? 'WINDOWS' : 'ANDROID'}', style: TextStyle(color: C.muted,
+          Text('INFRARED  /  V1.3  ·  ${Platform.isWindows ? 'WINDOWS' : 'ANDROID'}', style: TextStyle(color: C.muted,
             fontSize: 10, letterSpacing: 2)),
         ])),
     )),
@@ -389,7 +574,9 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
         constraints: const BoxConstraints(maxWidth: 980),
         child: Padding(padding: const EdgeInsets.fromLTRB(18, 18, 18, 30),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            _topBar(), const SizedBox(height: 28),
+            _topBar(),
+            if (_noticeAlert != null) _alertNoticeCard(),
+            const SizedBox(height: 28),
             if (_tab == 0) _overview(),
             if (_tab == 1) _chartsPage(),
             if (_tab == 2) _systemPage(),
@@ -407,6 +594,14 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
       Text('LIVE MONITOR', style: TextStyle(
         color: C.muted, letterSpacing: 2, fontSize: 9)),
     ])),
+    IconButton(tooltip:'Alertas térmicos',onPressed:_openAlerts,
+      icon:Stack(clipBehavior:Clip.none,children:[
+        const Icon(Icons.notifications_outlined,color:C.text,size:25),
+        if(_unreadCount>0)Positioned(right:-2,top:-2,child:Container(
+          width:11,height:11,decoration:BoxDecoration(color:C.red,
+            shape:BoxShape.circle,border:Border.all(color:C.bg,width:1.4)))),
+      ])),
+    const SizedBox(width:6),
     Container(padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
       decoration: BoxDecoration(borderRadius: BorderRadius.circular(99),
         color: (_failures < 5 ? C.green : C.orange).withValues(alpha: .1),
@@ -445,6 +640,17 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
         ],
       );
     }),
+    const SizedBox(height:18),
+    Panel(child:Row(children:[
+      const Icon(Icons.energy_savings_leaf_outlined,color:C.green,size:25),
+      const SizedBox(width:12),
+      Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+        const Text('Vigilância térmica de plantas',style:TextStyle(fontWeight:FontWeight.w800)),
+        Text('${_alerts.length} alertas registrados · limiar +1,5 °C',
+          style:const TextStyle(color:C.muted,fontSize:12)),
+      ])),
+      TextButton(onPressed:_openAlerts,child:const Text('Ver alertas')),
+    ])),
     const SizedBox(height: 18),
     ThermalMap(frame: _frame, pixel: _pixel,
       onTap: (p) => setState(() => _pixel = p)),
@@ -486,6 +692,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
       _systemRow('Tempo desde o boot', clock(_frame?.ms ?? 0), Icons.timer_outlined),
       _systemRow('Registros (ESP32)', '${_frame?.id ?? 0}', Icons.storage),
       _systemRow('Dispositivos no AP', '${_frame?.clients ?? 0}', Icons.devices),
+      _systemRow('Alertas salvos', '${_alerts.length}', Icons.notifications_active_outlined),
       _systemRow('CSV', _frame?.flashOk == true
         ? (_frame?.csvFull == true ? 'Cheio — exporte agora' : 'Ativo')
         : 'LittleFS indisponível', Icons.save_alt),
@@ -506,9 +713,13 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
     ])),
     const SizedBox(height: 14),
     _downloadButton(),
+    const SizedBox(height:12),
+    SizedBox(width:double.infinity,height:48,child:OutlinedButton.icon(
+      onPressed:_exportAlertsCsv,icon:const Icon(Icons.notification_important_outlined),
+      label:const Text('EXPORTAR ALERTAS CSV'))),
     const SizedBox(height: 24),
     Center(child: OutlinedButton.icon(onPressed: () {
-      _refreshTimer?.cancel(); _historyTimer?.cancel();
+      _refreshTimer?.cancel(); _historyTimer?.cancel(); _alertsTimer?.cancel();
       setState(() { _connected = false; _frame = null; _history = []; _status = 'Pronto para conectar'; });
     }, icon: const Icon(Icons.link_off), label: const Text('Voltar à conexão'))),
   ]);
