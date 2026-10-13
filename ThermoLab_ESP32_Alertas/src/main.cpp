@@ -37,8 +37,8 @@ constexpr float ZONA_AMG = 0.05f;
 // o DHT11 pode ter erro de +/-2 C e o sensor termico enxerga superficies.
 constexpr float ALERTA_DELTA_MIN_C = 1.5f;  // minimo acima da temperatura ambiente
 constexpr float ALERTA_HISTERESE_C = 0.6f;
-constexpr uint8_t ALERTA_PIXELS_MIN = 3;      // area minima aquecida
-constexpr uint8_t ALERTA_FRAMES_MIN = 3;      // 3 leituras AMG consecutivas
+constexpr uint8_t ALERTA_PIXELS_MIN = 1;      // drone: aceitar 1 pixel aquecido confirmado
+constexpr uint8_t ALERTA_FRAMES_MIN = 3;      // 3 quadros consecutivos (600 ms)
 constexpr uint32_t ALERTA_COOLDOWN_MS = 5000;
 constexpr uint32_t ALERTA_REARM_MS = 1500;   // precisa esfriar para rearmar
 constexpr size_t ALERTAS_LIMITE_BYTES = 150000; // reserva flash para historico
@@ -75,6 +75,10 @@ uint32_t ultimoAlertaMs = 0;
 uint32_t proximoAlertaId = 0;
 uint32_t sessaoBoot = 0;
 uint32_t totalAlertas = 0;
+int alertaPixelsAcima = 0;
+float alertaDeltaAtual = NAN;
+const char* alertaEstado = "AGUARDANDO_SENSORES";
+
 
 int64_t offsetUnixMs = 0;  // unix_ms = uptime_ms + offsetUnixMs
 
@@ -295,10 +299,10 @@ void iniciarAlertas() {
   Serial.printf("ALERTAS: %u eventos preservados, sessao %u\n", totalAlertas, sessaoBoot);
 }
 
-void registrarAlerta(uint64_t ms, float ambiente, float pico, int pixels) {
+bool registrarAlerta(uint64_t ms, float ambiente, float pico, int pixels) {
   if (!alertasDisponiveis || alertasCheios) {
-    Serial.println("ALERTA TERMICO (sem persistencia disponivel)");
-    return;
+    Serial.println("ALERTA: armazenamento indisponivel ou cheio.");
+    return false;
   }
   uint64_t epoch = relogioSincronizado ? dataEventoMs(sessaoBoot, ms, 0) : 0;
   String linha;
@@ -310,7 +314,8 @@ void registrarAlerta(uint64_t ms, float ambiente, float pico, int pixels) {
   linha += String(pixelQuente % 8) + ',' + String(pixelQuente / 8) + ',';
   linha += String(pixels) + '\n';
   File f = LittleFS.open(CAMINHO_ALERTAS, "a");
-  if (!f) { alertasDisponiveis = false; return; }
+  if (!f) { alertasDisponiveis = false; return false; }
+  bool salvo = false;
   if (f.size() + linha.length() > ALERTAS_LIMITE_BYTES) {
     alertasCheios = true;
     Serial.println("ALERTAS: armazenamento cheio; exporte eventos.");
@@ -318,47 +323,76 @@ void registrarAlerta(uint64_t ms, float ambiente, float pico, int pixels) {
     f.flush();
     proximoAlertaId++;
     totalAlertas++;
+    salvo = true;
     Serial.printf("ALERTA #%u: ambiente %.2f C, pico %.2f C (delta %.2f), %d pixels\n",
                   proximoAlertaId, ambiente, pico, pico-ambiente, pixels);
   } else {
     alertasDisponiveis = false;
   }
   f.close();
+  return salvo;
 }
 
 void avaliarAlertaTermico() {
   const uint64_t ms = tempoMs();
   const uint32_t agora = millis();
+  alertaPixelsAcima = 0;
+  alertaDeltaAtual = NAN;
   if (!dhtOK || !leituraAMGOK || !pixelsIniciados ||
       !instanteDHT || ms - instanteDHT > 5000 || !isfinite(tempDHT) ||
       !instanteAMG || ms - instanteAMG > 1000) {
     framesQuentes = 0;
+    alertaEstado = "AGUARDANDO_SENSORES";
     return;
   }
-  int quentes = 0;
+
+  // Compara o ponto mais quente do mapa com a temperatura ambiente.
+  // Um pico isolado também é válido, mas só depois de três quadros.
+  alertaDeltaAtual = amgMax - tempDHT;
   for (int i = 0; i < TOTAL_PIXELS; i++) {
-    if (pixelsFiltrados[i] >= tempDHT + ALERTA_DELTA_MIN_C) quentes++;
+    if (pixelsFiltrados[i] >= tempDHT + ALERTA_DELTA_MIN_C) alertaPixelsAcima++;
   }
-  bool quente = amgMax >= tempDHT + ALERTA_DELTA_MIN_C && quentes >= ALERTA_PIXELS_MIN;
+  bool quente = alertaDeltaAtual >= ALERTA_DELTA_MIN_C &&
+                alertaPixelsAcima >= ALERTA_PIXELS_MIN;
+
   if (quente) {
     inicioResfriamento = 0;
     if (framesQuentes < 255) framesQuentes++;
-    if (alertaArmado && framesQuentes >= ALERTA_FRAMES_MIN &&
-        (!temUltimoAlerta || (uint32_t)(agora - ultimoAlertaMs) >= ALERTA_COOLDOWN_MS)) {
-      registrarAlerta(ms, tempDHT, amgMax, quentes);
+
+    if (!alertaArmado) {
+      alertaEstado = "AGUARDANDO_RESFRIAMENTO";
+      return;
+    }
+    if (temUltimoAlerta && (uint32_t)(agora-ultimoAlertaMs) < ALERTA_COOLDOWN_MS) {
+      alertaEstado = "TRAVA_5_SEGUNDOS";
+      return;
+    }
+    if (framesQuentes < ALERTA_FRAMES_MIN) {
+      alertaEstado = "CONFIRMANDO";
+      return;
+    }
+    if (registrarAlerta(ms, tempDHT, amgMax, alertaPixelsAcima)) {
       ultimoAlertaMs = agora;
       temUltimoAlerta = true;
       alertaArmado = false;
       framesQuentes = 0;
+      alertaEstado = "ALERTA_REGISTRADO";
+    } else {
+      alertaEstado = "FALHA_ARMAZENAMENTO";
     }
   } else {
     framesQuentes = 0;
+    alertaEstado = alertaDeltaAtual < 0 ? "AMG_ABAIXO_AMBIENTE" : "ABAIXO_LIMIAR";
+    // Um novo evento apenas depois de esfriar por 1,5 s: evita spam.
     if (amgMax <= tempDHT + ALERTA_DELTA_MIN_C - ALERTA_HISTERESE_C) {
       if (!inicioResfriamento) inicioResfriamento = agora;
-      if ((uint32_t)(agora - inicioResfriamento) >= ALERTA_REARM_MS) alertaArmado = true;
+      if ((uint32_t)(agora - inicioResfriamento) >= ALERTA_REARM_MS) {
+        alertaArmado = true;
+      }
     } else {
       inicioResfriamento = 0;
     }
+    if (!alertaArmado) alertaEstado = "AGUARDANDO_RESFRIAMENTO";
   }
 }
 
@@ -403,6 +437,16 @@ void enviarAPI() {
   j += ",\"amg_leitura_ok\":"; j += (leituraAMGOK && agora-instanteAMG<2000) ? "true" : "false";
   j += ",\"dht_leitura_ok\":"; j += (dhtOK && agora-instanteDHT<5000) ? "true" : "false";
   j += ",\"alertas_total\":" + String(totalAlertas);
+  j += ",\"alerta_versao\":2";
+  j += ",\"alerta_estado\":\"" + String(alertaEstado) + "\"";
+  j += ",\"alerta_delta_atual_c\":" + jsonNumero(alertaDeltaAtual);
+  j += ",\"alerta_pixels_quentes\":" + String(alertaPixelsAcima);
+  j += ",\"alerta_frames_confirmados\":" + String(framesQuentes);
+  j += ",\"alerta_armado\":"; j += alertaArmado ? "true" : "false";
+  j += ",\"alerta_cooldown_restante_ms\":" +
+      String(temUltimoAlerta && (uint32_t)(millis()-ultimoAlertaMs) < ALERTA_COOLDOWN_MS ?
+             ALERTA_COOLDOWN_MS - (uint32_t)(millis()-ultimoAlertaMs) : 0);
+
   j += ",\"alertas_ultimo_id\":" + String(proximoAlertaId);
   j += ",\"alertas_cheios\":"; j += alertasCheios ? "true" : "false";
   j += ",\"alertas_ok\":"; j += alertasDisponiveis ? "true" : "false";
@@ -696,7 +740,7 @@ void setup() {
   ultimoAMG = agora - INTERVALO_AMG_MS;
   ultimoDHT = agora - INTERVALO_DHT_MS;
   ultimoLog = agora - INTERVALO_LOG_MS;
-  Serial.println("ThermoLab GPIO27 | http://192.168.4.1 | Wi-Fi ESP32-Termico / 12345678");
+  Serial.println("ThermoLab ALERTAS V1.4 GPIO27 | http://192.168.4.1 | Wi-Fi ESP32-Termico / 12345678");
 }
 void loop() {
   servidor.handleClient();

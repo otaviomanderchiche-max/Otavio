@@ -47,4 +47,9 @@ No firmware `ESP32/src/main.cpp`:
 
 **Compilação:** o projeto está preparado para PlatformIO + Flutter. Os binários APK/EXE e funcionamento em hardware ainda precisam ser compilados/validados. Não anuncie como executáveis testados sem resultado positivo do workflow.
 
-A versão publicada neste commit é 1.3.0. Windows é EXE instalável, Android é APK instalável.
+## V1.4 — Diagnóstico de alertas
+
+A tela Monitor agora informa a diferença entre AMG máximo e DHT11 e explica o motivo de não gerar alertas. Mostra erro quando o firmware é antigo ou LittleFS não salva eventos. O sino no canto direito fica vermelho quando há alertas não lidos.
+A atualização do app requer **também** a programação V1.4 no ESP32.
+
+Observação: app V1.4 requer firmware V1.4 do ESP32 para alertas.

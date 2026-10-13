@@ -1,0 +1,29 @@
+name: INFRARED - Verificar firmware ESP32
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ThermoLab_ESP32_Alertas/**'
+      - '.github/workflows/infrared-esp32-firmware.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar PlatformIO
+        run: pip install platformio
+      - name: Compilar firmware ESP32
+        run: pio run -d ThermoLab_ESP32_Alertas
+      - name: Arquivo BIN
+        uses: actions/upload-artifact@v4
+        with:
+          name: INFRARED-ESP32-firmware-bin
+          path: ThermoLab_ESP32_Alertas/.pio/build/esp32dev/firmware.bin
+          if-no-files-found: error

@@ -1,5 +1,5 @@
 #define MyAppName "INFRARED"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 [Setup]
 AppId={{2AD54019-BC11-4541-9C03-98F88AC0DDFA}
 AppName={#MyAppName}

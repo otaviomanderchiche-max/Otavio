@@ -14,12 +14,22 @@ class ThermalFrame {
     required this.pixels, required this.dhtOk, required this.amgOk,
     required this.csvFull, required this.flashOk, required this.csvBytes,
     required this.csvLimit, required this.clients,
+    this.alertSupported=false, this.alertStorageOk=false, this.alertFull=false,
+    this.alertArmed=false, this.alertTotal=0, this.alertPixels=0,
+    this.alertFrames=0, this.alertCooldownMs=0, this.alertDelta=null,
+    this.alertThreshold=1.5, this.alertState='DESCONHECIDO',
   });
 
   final int id, ms, session, hotX, hotY, clients, csvBytes, csvLimit;
   final double? temperature, humidity, avg, min, max;
   final List<double?> pixels;
   final bool dhtOk, amgOk, csvFull, flashOk;
+  final bool alertSupported, alertStorageOk, alertFull, alertArmed;
+  final int alertTotal, alertPixels, alertFrames, alertCooldownMs;
+  final double? alertDelta;
+  final double alertThreshold;
+  final String alertState;
+
 
   factory ThermalFrame.fromJson(Map<String, dynamic> j) {
     int toInt(dynamic v) => v is num ? v.toInt() : 0;
@@ -38,6 +48,21 @@ class ThermalFrame {
       csvFull: j['log_cheio'] == true, flashOk: j['flash_ok'] == true,
       csvBytes: toInt(j['csv_bytes']), csvLimit: toInt(j['csv_limite']),
       clients: toInt(j['clientes']),
+      alertSupported: j.containsKey('alertas_total'),
+      alertStorageOk: j['alertas_ok'] == true,
+      alertFull: j['alertas_cheios'] == true,
+      alertArmed: j['alerta_armado'] == true,
+      alertTotal: toInt(j['alertas_total']),
+      alertPixels: toInt(j['alerta_pixels_quentes']),
+      alertFrames: toInt(j['alerta_frames_confirmados']),
+      alertCooldownMs: toInt(j['alerta_cooldown_restante_ms']),
+      alertDelta: n(j['alerta_delta_atual_c']) ?? (
+        n(j['maxima']) != null && n(j['temperatura']) != null
+          ? n(j['maxima'])! - n(j['temperatura'])! : null),
+      alertThreshold: n(j['alerta_delta_min_c']) ?? 1.5,
+      alertState: j['alerta_estado'] is String
+        ? j['alerta_estado'] as String : 'FIRMWARE_ANTIGO',
+
     );
   }
 }

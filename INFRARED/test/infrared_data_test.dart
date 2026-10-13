@@ -56,4 +56,25 @@ void main() {
     expect(alert.localTime,isNull);
     expect(alert.ms,4300);
   });
+
+  test('estado de alertas e diferenca termica no painel', () {
+    final f=ThermalFrame.fromJson({
+      'temperatura':28.0,'maxima':34.0,'pixels':List.filled(64, 24),
+      'alertas_total':2,'alertas_ok':true,'alerta_estado':'CONFIRMANDO',
+      'alerta_delta_min_c':1.5,'alerta_pixels_quentes':1,
+      'alerta_frames_confirmados':2,'alerta_delta_atual_c':6.0,
+      'alerta_armado':true
+    });
+    expect(f.alertSupported,true);
+    expect(f.alertStorageOk,true);
+    expect(f.alertPixels,1);
+    expect(f.alertDelta,6.0);
+    expect(f.alertState,'CONFIRMANDO');
+  });
+
+  test('firmware anterior nao suporta notificacoes', () {
+    final f=ThermalFrame.fromJson({'temperatura':30.0,'maxima':29.0,'pixels':[]});
+    expect(f.alertSupported,false);
+    expect(f.alertDelta,-1.0);
+  });
 }

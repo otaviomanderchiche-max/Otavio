@@ -1,7 +1,7 @@
 name: infrared
 description: Aplicativo INFRARED para monitoramento ESP32 DHT11 e AMG8833.
 publish_to: none
-version: 1.3.0+3
+version: 1.4.0+4
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

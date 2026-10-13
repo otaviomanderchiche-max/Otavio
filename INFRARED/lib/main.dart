@@ -122,6 +122,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
   List<ThermalAlert> _alerts = [];
   bool _alertsLoading = false;
   bool _alertsInitialized = false;
+  String? _alertsError;
   int _lastSeenAlertId = 0;
   ThermalAlert? _noticeAlert;
   late final Future<void> _seenReady;
@@ -334,7 +335,10 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
         }
       }
       _alertsInitialized=true;
-    } catch (_) { /* firmware anterior pode nao ter /alertas */ }
+      if (_alertsError != null && mounted) setState(() => _alertsError=null);
+    } catch (e) {
+      if (mounted) setState(() => _alertsError=_message(e));
+    }
     finally {_alertsLoading=false;}
   }
 
@@ -560,7 +564,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
             textAlign: TextAlign.center,
             style: TextStyle(color: C.muted, fontSize: 11, height: 1.5)),
           const SizedBox(height: 34),
-          Text('INFRARED  /  V1.3  ·  ${Platform.isWindows ? 'WINDOWS' : 'ANDROID'}', style: TextStyle(color: C.muted,
+          Text('INFRARED  /  V1.4  ·  ${Platform.isWindows ? 'WINDOWS' : 'ANDROID'}', style: TextStyle(color: C.muted,
             fontSize: 10, letterSpacing: 2)),
         ])),
     )),
@@ -615,6 +619,60 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
       ])),
   ]);
 
+  String _alertStatusText() {
+    final f=_frame;
+    if (f==null) return 'Aguardando dados';
+    if (!f.alertSupported) return 'Firmware do ESP32 sem suporte a alertas. Atualize o ESP32.';
+    if (!f.alertStorageOk) return 'Armazenamento de alertas indisponível no ESP32.';
+    switch(f.alertState) {
+      case 'AGUARDANDO_SENSORES': return 'Aguardando medições válidas do DHT11 e AMG8833';
+      case 'AMG_ABAIXO_AMBIENTE': return 'Mapa térmico abaixo da temperatura ambiente';
+      case 'ABAIXO_LIMIAR': return 'Diferença abaixo do limite configurado';
+      case 'CONFIRMANDO': return 'Ponto quente detectado: confirmando leituras';
+      case 'TRAVA_5_SEGUNDOS': return 'Intervalo de segurança de 5 segundos';
+      case 'AGUARDANDO_RESFRIAMENTO': return 'Ocorrência registrada; aguarda resfriamento para rearmar';
+      case 'ALERTA_REGISTRADO': return 'Alerta registrado e salvo no ESP32';
+      case 'FALHA_ARMAZENAMENTO': return 'Erro ao salvar alerta: verifique o LittleFS';
+      default: return 'Monitorando mapa térmico';
+    }
+  }
+
+  Widget _alertDiagnostics() {
+    final f=_frame;
+    final delta=f?.alertDelta;
+    final deltaText=delta==null?'--':
+      '${delta>=0?'+':''}${delta.toStringAsFixed(2)} °C';
+    final good=f?.alertSupported==true && f?.alertStorageOk==true &&
+      (f?.alertState=='CONFIRMANDO' || f?.alertState=='ALERTA_REGISTRADO');
+    final needsFirmware=f?.alertSupported==false;
+    final infoColor=needsFirmware ? C.red : (good ? C.orange : C.cyan);
+    return Panel(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+      Row(children:[
+        Icon(Icons.energy_savings_leaf_outlined,color:infoColor,size:24),
+        const SizedBox(width:10),
+        const Expanded(child:Text('Detecção térmica de plantas',
+          style:TextStyle(fontWeight:FontWeight.w800))),
+        TextButton(onPressed:_openAlerts,child:const Text('Alertas'))
+      ]),
+      const SizedBox(height:8),
+      Text(_alertStatusText(),style:TextStyle(color:infoColor,fontSize:13)),
+      const SizedBox(height:10),
+      Wrap(spacing:18,runSpacing:7,children:[
+        Text('Diferença pico - ambiente: $deltaText',
+          style:const TextStyle(color:C.text,fontSize:12)),
+        Text('Limiar: +${(f?.alertThreshold??1.5).toStringAsFixed(1)} °C',
+          style:const TextStyle(color:C.muted,fontSize:12)),
+        Text('Pixels quentes: ${f?.alertPixels??0}',
+          style:const TextStyle(color:C.muted,fontSize:12)),
+        Text('Registrados: ${f?.alertTotal??0}',
+          style:const TextStyle(color:C.muted,fontSize:12)),
+      ]),
+      if(_alertsError!=null)Padding(padding:const EdgeInsets.only(top:8),
+        child:Text('Erro ao buscar eventos: $_alertsError',
+          style:const TextStyle(color:C.red,fontSize:12))),
+    ]));
+  }
+
   Widget _overview() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     const Text('Painel térmico', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
     const SizedBox(height: 5),
@@ -641,16 +699,7 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
       );
     }),
     const SizedBox(height:18),
-    Panel(child:Row(children:[
-      const Icon(Icons.energy_savings_leaf_outlined,color:C.green,size:25),
-      const SizedBox(width:12),
-      Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-        const Text('Vigilância térmica de plantas',style:TextStyle(fontWeight:FontWeight.w800)),
-        Text('${_alerts.length} alertas registrados · limiar +1,5 °C',
-          style:const TextStyle(color:C.muted,fontSize:12)),
-      ])),
-      TextButton(onPressed:_openAlerts,child:const Text('Ver alertas')),
-    ])),
+    _alertDiagnostics(),
     const SizedBox(height: 18),
     ThermalMap(frame: _frame, pixel: _pixel,
       onTap: (p) => setState(() => _pixel = p)),
@@ -693,6 +742,12 @@ class _InfraredHomeState extends State<InfraredHome> with WidgetsBindingObserver
       _systemRow('Registros (ESP32)', '${_frame?.id ?? 0}', Icons.storage),
       _systemRow('Dispositivos no AP', '${_frame?.clients ?? 0}', Icons.devices),
       _systemRow('Alertas salvos', '${_alerts.length}', Icons.notifications_active_outlined),
+      _systemRow('Detecção térmica', _frame?.alertState ?? 'Sem dados', Icons.info_outline),
+      _systemRow('Firmware de alertas', _frame?.alertSupported==true ? 'Compatível' : 'Antigo (atualizar)',
+        Icons.system_update_alt),
+      _systemRow('Memória de alertas', _frame?.alertStorageOk==true ? 'Disponível' : 'Indisponível',
+        Icons.sd_storage_outlined),
+
       _systemRow('CSV', _frame?.flashOk == true
         ? (_frame?.csvFull == true ? 'Cheio — exporte agora' : 'Ativo')
         : 'LittleFS indisponível', Icons.save_alt),

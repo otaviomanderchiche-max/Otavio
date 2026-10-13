@@ -101,8 +101,8 @@ jobs:
       - name: Publicar instaladores no GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: infrared-v1.3.0
-          name: INFRARED 1.3.0 - Windows e Android
+          tag_name: infrared-v1.4.0
+          name: INFRARED 1.4.0 - Windows e Android
           body: |
             INFRARED com Wi-Fi ESP32-Termico e endpoint 192.168.4.1.
             Windows: execute INFRARED-Windows-Setup.exe.
