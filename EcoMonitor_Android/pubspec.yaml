@@ -1,7 +1,7 @@
 name: ecomonitor_app
 description: App EcoMonitor para Wi-Fi ESP32 com WebView
 publish_to: none
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: '>=3.6.0 <4.0.0'
@@ -13,3 +13,5 @@ dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/forest.jpg

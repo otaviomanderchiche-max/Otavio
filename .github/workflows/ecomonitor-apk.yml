@@ -34,6 +34,8 @@ jobs:
           flutter create --platforms android --android-language kotlin --project-name ecomonitor_app --org com.ecomonitor /tmp/ecomonitor_build
           cp EcoMonitor_Android/pubspec.yaml /tmp/ecomonitor_build/pubspec.yaml
           cp EcoMonitor_Android/lib/main.dart /tmp/ecomonitor_build/lib/main.dart
+          cp EcoMonitor_Android/lib/species_panel.dart /tmp/ecomonitor_build/lib/species_panel.dart
+          cp EcoMonitor_Android/lib/species_dashboard.dart /tmp/ecomonitor_build/lib/species_dashboard.dart
           cp EcoMonitor_Android/android/app/src/main/AndroidManifest.xml /tmp/ecomonitor_build/android/app/src/main/AndroidManifest.xml
           cp EcoMonitor_Android/android/app/src/main/kotlin/com/ecomonitor/ecomonitor_app/MainActivity.kt /tmp/ecomonitor_build/android/app/src/main/kotlin/com/ecomonitor/ecomonitor_app/MainActivity.kt
           if [ -f /tmp/ecomonitor_build/android/app/build.gradle.kts ]; then
@@ -41,6 +43,16 @@ jobs:
           else
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 29/' /tmp/ecomonitor_build/android/app/build.gradle
           fi
+      - name: Baixar foto de floresta e personalizar icone
+        shell: bash
+        run: |
+          python3 -m pip install --quiet pillow
+          mkdir -p /tmp/ecomonitor_build/assets
+          curl -fLsS --retry 3 --max-time 60 \
+            'https://images.unsplash.com/photo-1448375240586-882707db888b?fit=crop&w=1000&q=78&fm=jpg' \
+            -o /tmp/ecomonitor_build/assets/forest.jpg
+          python3 EcoMonitor_Android/asset_scripts/launcher.py /tmp/ecomonitor_build
+
       - name: Gerar APK
         working-directory: /tmp/ecomonitor_build
         run: |

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'species_dashboard.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -307,6 +308,10 @@ class _EcoHomeState extends State<EcoHome> {
             Text('EcoMonitor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: ecoDark)),
             Text('Conectado ao ESP32 · Sem internet', style: TextStyle(fontSize: 11, color: ecoGreen)),
           ])),
+          IconButton(tooltip: 'Espécies recomendadas',
+            icon: const Icon(Icons.forest_rounded, color: ecoGreen),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SpeciesDashboardPage()))),
           IconButton(tooltip: 'Atualizar', icon: const Icon(Icons.refresh_rounded),
             onPressed: () => _webController?.reload()),
           PopupMenuButton<String>(
