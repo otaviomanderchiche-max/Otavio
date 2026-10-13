@@ -67,7 +67,9 @@ jobs:
         shell: pwsh
       - name: Compilar Windows
         shell: pwsh
-        run: flutter build windows --release
+        run: |
+          $env:CL = '/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS'
+          flutter build windows --release
       - name: Instalar gerador de setup
         shell: pwsh
         run: choco install innosetup -y --no-progress
