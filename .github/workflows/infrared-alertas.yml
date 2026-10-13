@@ -50,7 +50,7 @@ jobs:
           path: INFRARED/INFRARED-Android.apk
           if-no-files-found: error
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     defaults:
       run:
         working-directory: INFRARED
@@ -71,7 +71,9 @@ jobs:
         shell: pwsh
       - name: Compilar Windows
         shell: pwsh
-        run: flutter build windows --release
+        run: |
+          $env:CXXFLAGS = '/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS'
+          flutter build windows --release
       - name: Instalar gerador de setup
         shell: pwsh
         run: choco install innosetup -y --no-progress
