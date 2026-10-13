@@ -1,0 +1,107 @@
+name: INFRARED - Windows EXE e Android APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'INFRARED/**'
+      - '.github/workflows/infrared-instaladores.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: INFRARED
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Criar aplicativo Android
+        run: flutter create --platforms=android --org com.infrared.monitoramento --project-name infrared .
+      - name: Configurar acesso a Wi-Fi e HTTP local
+        run: |
+          cp android_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
+          else
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' android/app/build.gradle
+          fi
+      - run: flutter pub get
+      - name: Compilar APK
+        run: flutter build apk --release
+      - name: Renomear arquivo para download direto
+        run: cp build/app/outputs/flutter-apk/app-release.apk INFRARED-Android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: INFRARED-Android
+          path: INFRARED/INFRARED-Android.apk
+          if-no-files-found: error
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: INFRARED
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Ativar Flutter Windows
+        shell: pwsh
+        run: flutter config --enable-windows-desktop
+      - name: Criar projeto Windows
+        shell: pwsh
+        run: flutter create --platforms=windows --org com.infrared.monitoramento --project-name infrared .
+      - run: flutter pub get
+        shell: pwsh
+      - name: Compilar Windows
+        shell: pwsh
+        run: flutter build windows --release
+      - name: Instalar gerador de setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Empacotar aplicativo e dependencias em um EXE instalavel
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw 'Inno Setup nao encontrado' }
+          & $iscc 'installer.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Falha no instalador' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: INFRARED-Windows
+          path: INFRARED/build/installer/INFRARED-Windows-Setup.exe
+          if-no-files-found: error
+  publicar:
+    name: Publicar downloads individuais
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publicar instaladores no GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: infrared-v1.2.0
+          name: INFRARED 1.2.0 - Windows e Android
+          body: |
+            INFRARED com Wi-Fi ESP32-Termico e endpoint 192.168.4.1.
+            Windows: execute INFRARED-Windows-Setup.exe.
+            Android: instale INFRARED-Android.apk.
+          files: |
+            dist/INFRARED-Android.apk
+            dist/INFRARED-Windows-Setup.exe
+          fail_on_unmatched_files: true

@@ -1,0 +1,23 @@
+name: infrared
+description: Aplicativo INFRARED para monitoramento ESP32 DHT11 e AMG8833.
+publish_to: none
+version: 1.2.0+2
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.6.0
+  wifi_iot: ^0.3.19+3
+  permission_handler: ^12.0.1
+  path_provider: ^2.1.5
+  share_plus: ^12.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
