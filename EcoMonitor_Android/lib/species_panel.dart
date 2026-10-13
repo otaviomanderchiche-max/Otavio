@@ -125,7 +125,7 @@ int _compatibilityScore({
   );
 
   final score = (tempScore * 0.58) + (humidityScore * 0.42);
-  return score.round().clamp(0, 100);
+  return score.round().clamp(0, 100).toInt();
 }
 
 double _intervalScore({

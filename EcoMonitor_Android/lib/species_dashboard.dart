@@ -72,3 +72,4 @@ class _SpeciesDashboardPageState extends State<SpeciesDashboardPage> {
           style:TextStyle(color:Color(0xFF637468),fontSize:12,height:1.5))),
     ])),
   );
+}
