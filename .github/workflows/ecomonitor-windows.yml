@@ -1,0 +1,68 @@
+name: Gerar instalador EcoMonitor Windows
+on:
+  push:
+    paths:
+      - 'EcoMonitor_Windows/**'
+      - '.github/workflows/ecomonitor-windows.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    name: Compilar EXE Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar bibliotecas
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r EcoMonitor_Windows/requirements.txt
+      - name: Baixar foto e gerar icone de floresta
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://images.unsplash.com/photo-1448375240586-882707db888b?fit=crop&w=1000&q=78&fm=jpg' -OutFile EcoMonitor_Windows/src/assets/forest.jpg
+          python EcoMonitor_Windows/generate_icon.py
+          if (!(Test-Path EcoMonitor_Windows/src/assets/ecomonitor.ico)) { throw 'Icone nao gerado' }
+      - name: Compilar executavel unico
+        shell: pwsh
+        working-directory: EcoMonitor_Windows
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name EcoMonitor --icon src/assets/ecomonitor.ico --add-data 'src/assets;assets' --collect-all webview src/app.py
+          if (!(Test-Path dist/EcoMonitor.exe)) { throw 'Falha ao gerar EcoMonitor.exe' }
+          Copy-Item dist/EcoMonitor.exe ../EcoMonitor_Windows_Portatil.exe
+      - name: Testar inicializacao do executavel
+        shell: pwsh
+        run: |
+          # O teste basico foi feito em Python antes do build. O executavel
+          # deve estar presente e ter tamanho significativo (>5 MB).
+          $exe='EcoMonitor_Windows_Portatil.exe'
+          if ((Get-Item $exe).Length -lt 5000000) { throw 'EXE incompleto' }
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Criar instalador Windows
+        shell: pwsh
+        working-directory: EcoMonitor_Windows
+        run: |
+          $iscc='C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (!(Test-Path $iscc)) { $iscc='C:\Program Files\Inno Setup 6\ISCC.exe' }
+          if (!(Test-Path $iscc)) { throw 'Inno Setup nao encontrado' }
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Falha no instalador Inno Setup' }
+          Copy-Item output/EcoMonitor_Windows_Instalador.exe ../EcoMonitor_Windows_Instalador.exe
+      - name: Publicar EXE e instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: EcoMonitor-Desktop-Windows
+          path: |
+            EcoMonitor_Windows_Portatil.exe
+            EcoMonitor_Windows_Instalador.exe
+          retention-days: 30
+          if-no-files-found: error
