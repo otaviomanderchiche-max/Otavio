@@ -1,0 +1,33 @@
+name: RoboCup BLE Android APK
+on:
+  push:
+    branches: [robocup-ble-app]
+    paths:
+      - 'robocup-bluetooth-app/**'
+      - '.github/workflows/robocup-ble-apk.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Instalar SDK Android
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Compilar APK
+        run: gradle --no-daemon -p robocup-bluetooth-app assembleDebug
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboCup-Control-BLE-APK
+          path: robocup-bluetooth-app/app/build/outputs/apk/debug/app-debug.apk
