@@ -127,7 +127,7 @@ public class MainActivity extends Activity {
     tab=i;pageMatch.setVisibility(i==0?View.VISIBLE:View.GONE);
     pageRobots.setVisibility(i==1?View.VISIBLE:View.GONE);
     pageBluetooth.setVisibility(i==2?View.VISIBLE:View.GONE);
-    LinearLayout r=(LinearLayout)root.getChildAt(3);
+    LinearLayout r=(LinearLayout)root.getChildAt(4);
     if(r!=null){for(int j=0;j<r.getChildCount();j++){
       View child=r.getChildAt(j);if(child instanceof Button){
         child.setBackground(shape(j==i?CYAN:PANEL2,j==i?0:LINE,12));
