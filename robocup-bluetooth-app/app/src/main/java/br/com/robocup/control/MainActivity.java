@@ -1,236 +1,590 @@
 package br.com.robocup.control;
 
 import android.Manifest;
-import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.*;
 import android.bluetooth.*;
 import android.bluetooth.le.*;
 import android.content.*;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.*;
 import android.view.*;
 import android.widget.*;
+import org.json.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class MainActivity extends Activity {
- static final UUID SERVICE=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442001");
- static final UUID COMMAND=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442002");
- static final UUID STATE=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442003");
- static final UUID CCCD=UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
- final Handler h=new Handler(Looper.getMainLooper());
- final LinkedHashMap<String,Peer> peers=new LinkedHashMap<>();
- final LinkedHashMap<String,BluetoothDevice> discovered=new LinkedHashMap<>();
- BluetoothAdapter bt; BluetoothLeScanner scanner; boolean scanning=false, appVisible=false;
- LinearLayout list, found, base; EditText macInput; TextView info, clock, scoreA, scoreB;
- int blue=0,red=0; long clockEnds=0; int seconds=600; boolean match=false;
- static class Peer {
-   String mac, label, team="Azul", effective="0";
-   BluetoothDevice device; BluetoothGatt gatt; BluetoothGattCharacteristic command;
-   boolean connecting=false, connected=false, ready=false, wanted=false, busy=false;
-   long lastWrite=0, penaltyUntil=0, lastTap=0; int outs=0;
-   LinearLayout card; TextView name, state, details;
-   Peer(String m,String n){mac=m;label=n;}
- }
- int dp(int x){return (int)(x*getResources().getDisplayMetrics().density+.5);}
- LinearLayout col(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);return l;}
- LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(0);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
- TextView text(String s,int sz,int color,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(sz);t.setTextColor(color);if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
- void pad(View v,int n){v.setPadding(dp(n),dp(n),dp(n),dp(n));}
- void gap(LinearLayout l){View v=new View(this);l.addView(v,new LinearLayout.LayoutParams(1,dp(9)));}
- Button btn(String s,Runnable a){Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setOnClickListener(v->a.run());return b;}
- void toast(String s){Toast.makeText(this,s,Toast.LENGTH_SHORT).show();}
- @Override public void onCreate(Bundle b){
-  super.onCreate(b);getWindow().setStatusBarColor(0xff101722);getWindow().setNavigationBarColor(0xff101722);
-  BluetoothManager manager=(BluetoothManager)getSystemService(BLUETOOTH_SERVICE);bt=manager==null?null:manager.getAdapter();
-  ScrollView sv=new ScrollView(this);sv.setBackgroundColor(0xff101722);base=col();pad(base,14);sv.addView(base);setContentView(sv);
-  base.addView(text("ROBOCUP CONTROL BLE",23,Color.WHITE,true));
-  base.addView(text("Detecta ESP32 RC- e envia comandos 0/1",13,0xffaabbcc,false));gap(base);
-  info=text("Aguardando Bluetooth...",13,0xffaabbcc,false);base.addView(info);
-  base.addView(btn("PROCURAR ROBÔS POR BLUETOOTH",this::scan));base.addView(btn("PARAR BUSCA",this::stop));
-  macInput=new EditText(this);macInput.setTextColor(Color.WHITE);macInput.setHintTextColor(0xffaabbcc);macInput.setHint("MAC BLE AA:BB:CC:DD:EE:FF");macInput.setSingleLine(true);base.addView(macInput);
-  base.addView(btn("ADICIONAR MAC",()->addMac(macInput.getText().toString().trim())));
-  found=col();base.addView(found);
-  base.addView(text("PLACAR MANUAL",18,Color.WHITE,true));
-  LinearLayout scores=row();scoreA=text("AZUL 0",20,0xff6cbcff,true);scoreB=text("VERMELHO 0",20,0xffff7777,true);
-  Button ap=btn("Azul +",()->{blue++;draw();}),am=btn("Azul −",()->{blue=Math.max(0,blue-1);draw();});
-  Button bp=btn("Verm. +",()->{red++;draw();}),bm=btn("Verm. −",()->{red=Math.max(0,red-1);draw();});
-  base.addView(scoreA);base.addView(scoreB);base.addView(ap);base.addView(am);base.addView(bp);base.addView(bm);
-  base.addView(text("TEMPO DA PARTIDA",18,Color.WHITE,true));
-  clock=text("10:00",29,Color.WHITE,true);base.addView(clock);
-  base.addView(btn("INICIAR / PAUSAR",()->{
-   if(match){seconds=(int)Math.max(0,(clockEnds-SystemClock.elapsedRealtime()+999)/1000);match=false;sendAllZero();}
-   else{if(seconds<=0)seconds=600;clockEnds=SystemClock.elapsedRealtime()+seconds*1000L;match=true;}draw();
-  }));
-  base.addView(btn("ALTERAR DURAÇÃO (minutos)",()->{
-   EditText input=new EditText(this);input.setInputType(2);input.setText("10");
-   new AlertDialog.Builder(this).setTitle("Minutos de jogo").setView(input).setPositiveButton("Aplicar",(d,w)->{
-    try{int m=Integer.parseInt(input.getText().toString());if(m<1||m>240)throw new Exception();
-     match=false;seconds=m*60;sendAllZero();draw();
-    }catch(Exception e){toast("Use de 1 a 240 minutos");}}).setNegativeButton("Cancelar",null).show();
-  }));
-  base.addView(text("MEUS ROBÔS · TOQUE DUAS VEZES PARA 0/1",18,Color.WHITE,true));
-  base.addView(btn("PARAR TODOS",()->{for(Peer p:peers.values()){p.wanted=false;write(p,"0");}draw();}));
-  list=col();base.addView(list);
-  base.addView(text("Vermelho = ativo; verde = parado; laranja = penalizado.\nO ESP32 de teste controla LED/estado. Integre ao firmware dos motores antes de jogar.",12,0xffaabbcc,false));
-  if(!hasPerm())requestPerm();draw();
-  h.postDelayed(this::tick,600);
- }
- boolean hasPerm(){
-  if(Build.VERSION.SDK_INT>=31)return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==PackageManager.PERMISSION_GRANTED
-   &&checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED;
-  return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
- }
- void requestPerm(){
-  if(Build.VERSION.SDK_INT>=31)requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT},10);
-  else requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},10);
- }
- @Override public void onRequestPermissionsResult(int q,String[] p,int[] r){super.onRequestPermissionsResult(q,p,r);if(q==10&&hasPerm())scan();}
- @Override public void onResume(){super.onResume();appVisible=true;}
- @Override public void onPause(){for(Peer p:peers.values()){p.wanted=false;write(p,"0");}appVisible=false;super.onPause();}
- @Override public void onDestroy(){stop();for(Peer p:peers.values())if(p.gatt!=null)try{p.gatt.disconnect();p.gatt.close();}catch(Exception e){}h.removeCallbacksAndMessages(null);super.onDestroy();}
- final ScanCallback scanCb=new ScanCallback(){
-  @Override public void onScanResult(int cb,ScanResult result){
-   if(!hasPerm())return;
-   BluetoothDevice d=result.getDevice();String addr=d.getAddress().toUpperCase(Locale.ROOT);
-   String name=result.getScanRecord()==null?null:result.getScanRecord().getDeviceName();
-   if(name==null)try{name=d.getName();}catch(Exception e){}
-   if((name==null||!name.startsWith("RC-"))&&!peers.containsKey(addr))return;
-   if(!discovered.containsKey(addr)){discovered.put(addr,d);h.post(MainActivity.this::showFound);}
+  static final UUID SERVICE=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442001");
+  static final UUID CMD=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442002");
+  static final UUID STATE=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442003");
+  static final UUID MAC_CHAR=UUID.fromString("b8b7d610-4304-4ac1-9c68-0b3d87442004");
+  static final UUID CCCD=UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+  static final int BG=0xff0B1019, PANEL=0xff161F2E, PANEL2=0xff1B2638, LINE=0xff2E3B4F;
+  static final int WHITE=0xffF6F9FC, GRAY=0xff97A8BF, CYAN=0xff53C6FF;
+  static final int GREEN=0xff58DEA4, RED=0xffFF657A, GOLD=0xffF8C86D, BLUE=0xff5BA7FA;
+  final Handler h=new Handler(Looper.getMainLooper());
+  final LinkedHashMap<String,Robot> robots=new LinkedHashMap<>();
+  final LinkedHashMap<String,Sighting> devices=new LinkedHashMap<>();
+  final ArrayList<Phase> phases=new ArrayList<>();
+  BluetoothAdapter adapter;BluetoothLeScanner scanner; boolean scanning=false,foreground=true;
+  SharedPreferences preferences;int tab=0, blue=0, red=0, phaseIndex=0, remaining=600;
+  boolean clockRunning=false, clockPaused=false;long deadline=0;
+  LinearLayout root, pageMatch, pageRobots, pageBluetooth, robotsList, results, diagPanel;
+  TextView timer, phaseName, phaseDetail, scoreBlue, scoreRed, statusTop, scanStatus, foundCount;
+  TextView fleetText, diagBt, diagPerm, diagLocation; EditText inputMac;
+  long lastRedraw=0;
+  static class Robot {
+    String mac, name, team="Azul", firmwareMac="", state="0", problem="";
+    boolean connected=false, ready=false, connecting=false, wanted=false, writing=false;
+    int outs=0;long lastTap=0, lastWrite=0, penalizedUntil=0, lastTry=0;
+    BluetoothGatt gatt;BluetoothGattCharacteristic cmd;
+    TextView title,sub,indicator,count;LinearLayout card;
+    Robot(String m,String n){mac=m;name=n;}
   }
-  @Override public void onScanFailed(int code){h.post(()->toast("Erro de scan: "+code));}
- };
- void scan(){
-  if(!hasPerm()){requestPerm();return;}
-  if(bt==null){toast("Celular sem Bluetooth");return;}
-  if(!bt.isEnabled()){startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));return;}
-  if(scanning)return;
-  try{scanner=bt.getBluetoothLeScanner();scanning=true;discovered.clear();
-   scanner.startScan(null,new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),scanCb);
-   info.setText("Procurando RC-...");
-  }catch(Exception e){scanning=false;toast("Falha BLE: "+e.getMessage());}
- }
- void stop(){if(!scanning||scanner==null)return;try{if(hasPerm())scanner.stopScan(scanCb);}catch(Exception e){}scanning=false;}
- void showFound(){
-  found.removeAllViews();for(Map.Entry<String,BluetoothDevice> entry:discovered.entrySet()){
-   String mac=entry.getKey();BluetoothDevice device=entry.getValue();boolean registered=peers.containsKey(mac);
-   found.addView(btn((registered?"CONECTAR ":"ADICIONAR RC-  ")+mac,()->{
-    Peer p=peers.get(mac);if(p==null){p=new Peer(mac,"Robô "+(peers.size()+1));peers.put(mac,p);cards();}
-    connect(p,device);
-   }));
+  static class Sighting{
+    BluetoothDevice device;String name="";int rssi;long seen;
+    Sighting(BluetoothDevice d,String n,int power){device=d;name=n;rssi=power;seen=SystemClock.elapsedRealtime();}
   }
-  info.setText(discovered.size()+" ESP32 RoboCup encontrados.");
- }
- void addMac(String raw){
-  String mac=raw.toUpperCase(Locale.ROOT);
-  if(!BluetoothAdapter.checkBluetoothAddress(mac)){toast("MAC inválido");return;}
-  Peer p=peers.get(mac);if(p==null){p=new Peer(mac,"Robô "+(peers.size()+1));peers.put(mac,p);cards();}
-  macInput.setText("");if(hasPerm()&&bt!=null)try{connect(p,bt.getRemoteDevice(mac));}catch(Exception e){toast("Use Procurar Bluetooth");}
- }
- void connect(Peer p,BluetoothDevice d){
-  if(!hasPerm()){requestPerm();return;}
-  if(p.gatt!=null)return;try{p.device=d;p.connecting=true;p.gatt=d.connectGatt(this,false,new CB(p),BluetoothDevice.TRANSPORT_LE);
-  toast("Conectando "+p.mac);draw();}catch(Exception e){p.connecting=false;p.gatt=null;toast("Falha de conexão");}
- }
- class CB extends BluetoothGattCallback{
-  final Peer p;CB(Peer x){p=x;}
-  @Override public void onConnectionStateChange(BluetoothGatt g,int status,int state){
-   if(state==BluetoothProfile.STATE_CONNECTED&&status==BluetoothGatt.GATT_SUCCESS){
-    h.post(()->{p.connected=true;p.connecting=false;draw();});
-    try{g.discoverServices();}catch(Exception e){}
-   }else if(state==BluetoothProfile.STATE_DISCONNECTED||status!=BluetoothGatt.GATT_SUCCESS){
-    h.post(()->{p.connected=false;p.connecting=false;p.ready=false;p.busy=false;p.wanted=false;p.command=null;
-     if(p.gatt==g)p.gatt=null;try{g.close();}catch(Exception e){}draw();});
-   }
+  static class Phase {String name;int min;Phase(String n,int m){name=n;min=m;}}
+  @Override public void onCreate(Bundle s){
+    super.onCreate(s);
+    getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+    BluetoothManager m=(BluetoothManager)getSystemService(BLUETOOTH_SERVICE);adapter=m==null?null:m.getAdapter();
+    preferences=getSharedPreferences("robocup_control_v2",MODE_PRIVATE);
+    phases.add(new Phase("Calibração",5));phases.add(new Phase("1º tempo",10));
+    phases.add(new Phase("Intervalo",5));phases.add(new Phase("2º tempo",10));
+    restore();build();checkAccess(false);h.postDelayed(this::tick,250);
   }
-  @Override public void onServicesDiscovered(BluetoothGatt g,int status){
-   BluetoothGattService service=status==BluetoothGatt.GATT_SUCCESS?g.getService(SERVICE):null;
-   if(service==null){h.post(()->toast("Firmware sem serviço BLE RoboCup"));try{g.disconnect();}catch(Exception e){}return;}
-   p.command=service.getCharacteristic(COMMAND);
-   if(p.command==null){h.post(()->toast("UUID de comando não encontrado"));return;}
-   p.ready=true;p.busy=false;p.wanted=false;p.lastWrite=0;
-   BluetoothGattCharacteristic state=service.getCharacteristic(STATE);
-   if(state!=null)try{
-    g.setCharacteristicNotification(state,true);
-    BluetoothGattDescriptor cccd=state.getDescriptor(CCCD);
-    if(cccd!=null){if(Build.VERSION.SDK_INT>=33)g.writeDescriptor(cccd,BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-    else{cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);g.writeDescriptor(cccd);}}
-   }catch(Exception e){}
-   h.post(()->{draw();toast(p.label+" conectado!");});
+  @Override protected void onResume(){super.onResume();foreground=true;}
+  @Override protected void onPause(){
+    // Perdeu a tela: trava todos. O ESP32 também tem watchdog próprio.
+    for(Robot r:robots.values()){r.wanted=false;send(r,"0");}
+    foreground=false;save();super.onPause();
   }
-  @Override public void onDescriptorWrite(BluetoothGatt g,BluetoothGattDescriptor d,int status){h.post(()->write(p,"0"));}
-  @Override public void onCharacteristicWrite(BluetoothGatt g,BluetoothGattCharacteristic c,int status){h.post(()->{p.busy=false;if(status!=BluetoothGatt.GATT_SUCCESS)toast("Erro de envio "+status);});}
-  @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c){state(c.getValue());}
-  @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c,byte[] val){state(val);}
-  void state(byte[] val){if(val!=null){String v=new String(val,StandardCharsets.UTF_8).trim();
-   if(v.equals("0")||v.equals("1"))h.post(()->{p.effective=v;draw();});}}
- }
- void write(Peer p,String v){
-  if(!hasPerm()||!p.ready||p.gatt==null||p.command==null||p.busy)return;
-  try{p.busy=true;p.lastWrite=SystemClock.elapsedRealtime();byte[] bytes=v.getBytes(StandardCharsets.UTF_8);
-   int result;if(Build.VERSION.SDK_INT>=33)result=p.gatt.writeCharacteristic(p.command,bytes,BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-   else{p.command.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);p.command.setValue(bytes);result=p.gatt.writeCharacteristic(p.command)?0:-1;}
-   if(result!=0)p.busy=false;
-  }catch(Exception e){p.busy=false;}
- }
- void sendAllZero(){for(Peer p:peers.values())write(p,"0");}
- void cards(){
-  if(list==null)return;list.removeAllViews();
-  for(Peer p:peers.values()){
-   LinearLayout card=col();pad(card,13);card.setBackgroundColor(0xff213043);
-   p.card=card;p.name=text(p.label,18,Color.WHITE,true);card.addView(p.name);
-   p.state=text("PARADO",16,0xff21c88b,true);card.addView(p.state);
-   p.details=text("",12,0xffcad7e6,false);card.addView(p.details);
-   card.addView(btn("OUT OF BOUNDS (+1 saída / 1 minuto)",()->{
-    p.outs++;p.penaltyUntil=SystemClock.elapsedRealtime()+60000;write(p,"0");draw();
-   }));
-   card.addView(btn("EDITAR NOME E TIME",()->edit(p)));
-   card.setOnClickListener(v->{long now=SystemClock.elapsedRealtime();
-    if(now-p.lastTap<550){p.lastTap=0;
-     if(p.penaltyUntil>now){toast("Aguarde penalidade");return;}
-     p.wanted=!p.wanted;if(!p.wanted)write(p,"0");draw();
-    }else{p.lastTap=now;toast("Toque novamente para 0/1");}});
-   list.addView(card);gap(list);
-  }draw();
- }
- void edit(Peer p){
-  LinearLayout layout=col();pad(layout,15);
-  EditText name=new EditText(this);name.setText(p.label);layout.addView(name);
-  Spinner team=new Spinner(this);String[] opts={"Azul","Vermelho"};
-  team.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,opts));
-  team.setSelection(p.team.equals("Azul")?0:1);layout.addView(team);
-  new AlertDialog.Builder(this).setTitle("Editar robô").setView(layout).setPositiveButton("Salvar",(d,w)->{
-   p.label=name.getText().toString().trim();if(p.label.isEmpty())p.label="Robô";
-   p.team=team.getSelectedItem().toString();draw();
-  }).setNegativeButton("Cancelar",null).show();
- }
- void tick(){
-  long now=SystemClock.elapsedRealtime();
-  if(match){seconds=(int)Math.max(0,(clockEnds-now+999)/1000);if(seconds==0){match=false;sendAllZero();}}
-  for(Peer p:peers.values()){
-   if(p.penaltyUntil!=0&&now>=p.penaltyUntil)p.penaltyUntil=0;
-   boolean desired=p.wanted&&p.penaltyUntil==0&&match&&appVisible;
-   if(p.ready&&now-p.lastWrite>=(desired?900:1250)&&(desired||p.effective.equals("1")))write(p,desired?"1":"0");
-  }draw();h.postDelayed(this::tick,250);
- }
- void draw(){
-  if(clock==null)return;
-  clock.setText(String.format(Locale.ROOT,"%02d:%02d%s",seconds/60,seconds%60,match?"  • EM JOGO":"  • PAUSADO"));
-  scoreA.setText("AZUL "+blue);scoreB.setText("VERMELHO "+red);
-  int online=0;for(Peer p:peers.values())if(p.ready&&p.connected)online++;
-  if(info!=null&&!scanning)info.setText(online+" de "+peers.size()+" robôs conectados");
-  long now=SystemClock.elapsedRealtime();
-  for(Peer p:peers.values())if(p.card!=null){
-   boolean penalty=p.penaltyUntil>now,active=p.ready&&p.connected&&p.effective.equals("1")&&!penalty;
-   p.card.setBackgroundColor(penalty?0xff493621:active?0xff48262a:0xff1c372d);
-   p.name.setText(p.label+" • "+p.team);
-   p.state.setText(penalty?"PENALIZADO "+((p.penaltyUntil-now+999)/1000)+" s":active?"ATIVO (1)":p.ready?"PARADO (0)":"DESCONECTADO");
-   p.state.setTextColor(penalty?0xffffc15b:active?0xffff6262:0xff22d08d);
-   p.details.setText("BLE MAC: "+p.mac+"   |   saídas: "+p.outs+"\n"+
-     (p.ready?"Conectado":"Sem conexão")+(p.wanted?" • comando desejado 1":""));
+  @Override protected void onDestroy(){
+    stopSearch();for(Robot r:robots.values())if(r.gatt!=null)
+      try{r.gatt.disconnect();r.gatt.close();}catch(Exception ignored){}
+    h.removeCallbacksAndMessages(null);super.onDestroy();
   }
- }
+  int dp(float v){return(int)(v*getResources().getDisplayMetrics().density+.5f);}
+  LinearLayout col(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);return l;}
+  LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(0);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
+  GradientDrawable shape(int fill,int stroke,int radius){
+    GradientDrawable d=new GradientDrawable();d.setColor(fill);d.setCornerRadius(dp(radius));
+    if(stroke!=0)d.setStroke(dp(1),stroke);return d;
+  }
+  TextView t(String value,int size,int color,boolean bold){
+    TextView x=new TextView(this);x.setText(value);x.setTextColor(color);x.setTextSize(size);
+    x.setIncludeFontPadding(false);if(bold)x.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return x;
+  }
+  void p(View v,int a){v.setPadding(dp(a),dp(a),dp(a),dp(a));}
+  void space(LinearLayout v,int height){View g=new View(this);v.addView(g,new LinearLayout.LayoutParams(1,dp(height)));}
+  Button b(String label,int color,Runnable action){
+    Button v=new Button(this);v.setText(label);v.setAllCaps(false);v.setTextSize(13);
+    v.setTypeface(Typeface.DEFAULT,Typeface.BOLD);v.setTextColor(color==CYAN?BG:WHITE);
+    v.setBackground(shape(color,0,12));v.setMinHeight(0);v.setMinimumHeight(0);
+    v.setPadding(dp(12),dp(11),dp(12),dp(11));v.setOnClickListener(view->action.run());return v;
+  }
+  void pair(LinearLayout parent,Button one,Button two){
+    LinearLayout r=row();LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),1);lp.rightMargin=dp(8);
+    r.addView(one,lp);r.addView(two,new LinearLayout.LayoutParams(0,dp(48),1));parent.addView(r);
+  }
+  LinearLayout panel(LinearLayout into,int fill){
+    LinearLayout v=col();p(v,15);v.setBackground(shape(fill,LINE,18));into.addView(v);return v;
+  }
+  void section(LinearLayout in,String name,String sub){
+    space(in,19);in.addView(t(name,17,WHITE,true));
+    if(!sub.isEmpty()){space(in,5);in.addView(t(sub,12,GRAY,false));}
+    space(in,11);
+  }
+  void build(){
+    ScrollView sv=new ScrollView(this);sv.setFillViewport(true);sv.setBackgroundColor(BG);
+    root=col();p(root,16);sv.addView(root);setContentView(sv);
+    LinearLayout top=row();root.addView(top);
+    LinearLayout branding=col();branding.addView(t("ROBOCUP",12,CYAN,true));space(branding,3);
+    branding.addView(t("MATCH CONTROL",23,WHITE,true));
+    top.addView(branding,new LinearLayout.LayoutParams(0,-2,1));
+    TextView v=t("BLE  •  V2",11,GREEN,true);p(v,10);v.setBackground(shape(PANEL2,LINE,20));top.addView(v);
+    space(root,9);
+    statusTop=t("Bluetooth • verificando...",12,GRAY,false);root.addView(statusTop);
+    space(root,17);
+    LinearLayout tabs=row();root.addView(tabs);
+    String[] labels={"PARTIDA","ROBÔS","BLUETOOTH"};
+    for(int i=0;i<3;i++){final int n=i;Button tabBtn=b(labels[i],PANEL2,()->setTab(n));
+      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(47),1);lp.rightMargin=i<2?dp(5):0;tabs.addView(tabBtn,lp);
+      tabBtn.setTag(i);
+    }
+    space(root,16);
+    pageMatch=col();root.addView(pageMatch);
+    pageRobots=col();root.addView(pageRobots);
+    pageBluetooth=col();root.addView(pageBluetooth);
+    makeMatch();makeRobots();makeBluetooth();setTab(0);refresh();
+  }
+  void setTab(int i){
+    tab=i;pageMatch.setVisibility(i==0?View.VISIBLE:View.GONE);
+    pageRobots.setVisibility(i==1?View.VISIBLE:View.GONE);
+    pageBluetooth.setVisibility(i==2?View.VISIBLE:View.GONE);
+    LinearLayout r=(LinearLayout)root.getChildAt(3);
+    if(r!=null){for(int j=0;j<r.getChildCount();j++){
+      View child=r.getChildAt(j);if(child instanceof Button){
+        child.setBackground(shape(j==i?CYAN:PANEL2,j==i?0:LINE,12));
+        ((Button)child).setTextColor(j==i?BG:WHITE);
+      }
+    }}
+  }
+  void makeMatch(){
+    LinearLayout board=panel(pageMatch,PANEL);
+    board.addView(t("PLACAR AO VIVO",11,GRAY,true));space(board,13);
+    LinearLayout scores=row();board.addView(scores);
+    LinearLayout left=teamScore(true),right=teamScore(false);
+    scores.addView(left,new LinearLayout.LayoutParams(0,-2,1));
+    TextView sep=t("×",24,GRAY,true);p(sep,8);scores.addView(sep);
+    scores.addView(right,new LinearLayout.LayoutParams(0,-2,1));
+    space(board,15);
+    LinearLayout clock=row();p(clock,14);clock.setBackground(shape(PANEL2,0,14));board.addView(clock);
+    LinearLayout clockLabels=col();phaseName=t("1º tempo",13,CYAN,true);
+    phaseDetail=t("Etapa 1 / 4",12,GRAY,false);clockLabels.addView(phaseName);space(clockLabels,5);clockLabels.addView(phaseDetail);
+    clock.addView(clockLabels,new LinearLayout.LayoutParams(0,-2,1));
+    timer=t("10:00",31,WHITE,true);timer.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);clock.addView(timer);
+    section(pageMatch,"Tempo da partida","Calibração, tempos e intervalos personalizados.");
+    pair(pageMatch,b("INICIAR / PAUSAR",CYAN,this::toggleClock),b("PULAR ETAPA",PANEL2,this::skip));
+    space(pageMatch,8);pageMatch.addView(b("CONFIGURAR PARTIDA",PANEL2,this::configureTime));
+    section(pageMatch,"Controle geral","Cada robô obedece aos comandos individualmente.");
+    pair(pageMatch,b("ATIVAR TODOS",0xff28594C,()->{for(Robot x:robots.values())if(x.penalizedUntil<SystemClock.elapsedRealtime())x.wanted=true;refresh();}),
+      b("PARADA GERAL",0xff71313B,()->{for(Robot x:robots.values()){x.wanted=false;send(x,"0");}refresh();}));
+    space(pageMatch,17);LinearLayout summary=panel(pageMatch,PANEL);
+    summary.addView(t("RESUMO DE CONEXÕES",11,GRAY,true));space(summary,9);
+    fleetText=t("0 robôs cadastrados",15,WHITE,true);summary.addView(fleetText);
+    space(summary,9);summary.addView(b("ABRIR MEUS ROBÔS  →",PANEL2,()->setTab(1)));
+  }
+  LinearLayout teamScore(boolean azul){
+    LinearLayout c=col();c.setGravity(Gravity.CENTER);
+    c.addView(t(azul?"TIME AZUL":"TIME VERMELHO",12,azul?BLUE:RED,true));space(c,7);
+    TextView score=t("00",39,WHITE,true);score.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);
+    if(azul)scoreBlue=score;else scoreRed=score;
+    c.addView(score);space(c,8);
+    LinearLayout buttons=row();buttons.setGravity(Gravity.CENTER);
+    Button minus=b("−",PANEL2,()->{if(azul)blue=Math.max(0,blue-1);else red=Math.max(0,red-1);refresh();save();});
+    Button plus=b("+",PANEL2,()->{if(azul)blue++;else red++;refresh();save();});
+    LinearLayout.LayoutParams a=new LinearLayout.LayoutParams(dp(56),dp(40));a.rightMargin=dp(4);
+    buttons.addView(minus,a);buttons.addView(plus,new LinearLayout.LayoutParams(dp(56),dp(40)));
+    c.addView(buttons);return c;
+  }
+  void makeRobots(){
+    LinearLayout header=panel(pageRobots,PANEL);
+    header.addView(t("CONTROLE INDIVIDUAL",11,CYAN,true));space(header,7);
+    header.addView(t("Dois toques no cartão: alterna 0 / 1.",15,WHITE,true));
+    space(header,7);header.addView(t("VERMELHO = ativo   •   VERDE = parado   •   ÂMBAR = penalidade",11,GRAY,false));
+    space(pageRobots,12);
+    pair(pageRobots,b("NOVO ROBÔ",PANEL2,()->setTab(2)),
+      b("PARAR TODOS",0xff71313B,()->{for(Robot x:robots.values()){x.wanted=false;send(x,"0");}refresh();}));
+    space(pageRobots,12);robotsList=col();pageRobots.addView(robotsList);showRobots();
+  }
+  void showRobots(){
+    if(robotsList==null)return;robotsList.removeAllViews();
+    if(robots.isEmpty()){
+      LinearLayout empty=panel(robotsList,PANEL);
+      empty.addView(t("Nenhum robô cadastrado",16,WHITE,true));space(empty,8);
+      empty.addView(t("Abra a aba Bluetooth, faça a busca e toque em ADICIONAR.",13,GRAY,false));
+      return;
+    }
+    for(Robot x:robots.values()){
+      LinearLayout card=col();p(card,15);card.setBackground(shape(PANEL,LINE,16));x.card=card;
+      LinearLayout head=row();card.addView(head);
+      LinearLayout names=col();x.title=t(x.name,17,WHITE,true);names.addView(x.title);space(names,6);
+      x.sub=t("Time "+x.team+"  •  "+x.mac,11,GRAY,false);names.addView(x.sub);
+      head.addView(names,new LinearLayout.LayoutParams(0,-2,1));
+      x.indicator=t("PARADO",11,GREEN,true);p(x.indicator,9);x.indicator.setBackground(shape(0xff1E493D,0,10));head.addView(x.indicator);
+      space(card,9);x.count=t("0 saídas • desconectado",12,GRAY,false);card.addView(x.count);
+      space(card,11);pair(card,b("OUT OF BOUNDS",0xff584524,()->penalty(x)),
+        b("EDITAR",PANEL2,()->edit(x)));
+      card.setOnClickListener(view->{long now=SystemClock.elapsedRealtime();
+        if(now-x.lastTap<=650){
+          x.lastTap=0;
+          if(x.penalizedUntil>now){toast("Robô penalizado. Aguarde.");return;}
+          x.wanted=!x.wanted;
+          if(!x.wanted)send(x,"0");else send(x,"1");
+          refresh();save();
+        }else{x.lastTap=now;toast("Toque de novo para alternar 0 / 1");}
+      });
+      robotsList.addView(card);space(robotsList,10);
+    }
+  }
+  void makeBluetooth(){
+    LinearLayout diag=panel(pageBluetooth,PANEL);
+    diag.addView(t("DIAGNÓSTICO BLUETOOTH",11,CYAN,true));space(diag,12);
+    diagBt=t("Bluetooth: verificando",13,WHITE,false);diag.addView(diagBt);space(diag,6);
+    diagPerm=t("Permissão: verificando",13,WHITE,false);diag.addView(diagPerm);space(diag,6);
+    diagLocation=t("Localização: verificando",13,WHITE,false);diag.addView(diagLocation);
+    space(pageBluetooth,13);
+    pair(pageBluetooth,b("BUSCAR TODOS",CYAN,this::startSearch),b("PARAR BUSCA",PANEL2,this::stopSearch));
+    space(pageBluetooth,9);
+    scanStatus=t("A busca mostra qualquer dispositivo BLE, inclusive sem nome.",12,GRAY,false);
+    pageBluetooth.addView(scanStatus);space(pageBluetooth,11);
+    LinearLayout manual=panel(pageBluetooth,PANEL);
+    manual.addView(t("ADICIONAR POR MAC",11,GRAY,true));space(manual,8);
+    inputMac=new EditText(this);inputMac.setSingleLine(true);inputMac.setHint("AA:BB:CC:DD:EE:FF");
+    inputMac.setTextColor(WHITE);inputMac.setHintTextColor(GRAY);
+    inputMac.setBackground(shape(PANEL2,LINE,12));p(inputMac,12);manual.addView(inputMac);
+    space(manual,9);manual.addView(b("SALVAR MAC E CONECTAR",PANEL2,()->addMac(inputMac.getText().toString())));
+    section(pageBluetooth,"Dispositivos encontrados","Os RC- aparecem primeiro. Outros BLE ajudam a diagnosticar a busca.");
+    foundCount=t("Nenhum dispositivo ainda",12,GRAY,true);pageBluetooth.addView(foundCount);
+    space(pageBluetooth,9);results=col();pageBluetooth.addView(results);
+    space(pageBluetooth,14);pageBluetooth.addView(t(
+      "Se nenhum dispositivo aparece, verifique o Monitor Serial do ESP32 a 115200 baud. A placa deve exibir [BLE] ANUNCIANDO e um MAC BLE.",12,GRAY,false));
+    showDevices();
+  }
+  void addMac(String raw){
+    String mac=raw.trim().toUpperCase(Locale.ROOT);
+    if(!BluetoothAdapter.checkBluetoothAddress(mac)){toast("MAC inválido. Use AA:BB:CC:DD:EE:FF");return;}
+    Robot x=robots.get(mac);if(x==null){x=new Robot(mac,"Robô "+(robots.size()+1));robots.put(mac,x);}
+    inputMac.setText("");showRobots();refresh();save();
+    Sighting found=devices.get(mac);if(found!=null)connect(x,found.device);
+    else{toast("MAC salvo. Faça BUSCAR TODOS e confira se aparece.");startSearch();}
+  }
+  void showDevices(){
+    if(results==null)return;
+    results.removeAllViews();
+    int rc=0;for(Sighting s:devices.values())if(s.name.startsWith("RC-"))rc++;
+    foundCount.setText(devices.size()+" dispositivos BLE vistos • "+rc+" identificados como RC-");
+    ArrayList<Map.Entry<String,Sighting>> items=new ArrayList<>(devices.entrySet());
+    Collections.sort(items,(a,b)->{
+      int ai=a.getValue().name.startsWith("RC-")?0:1;
+      int bi=b.getValue().name.startsWith("RC-")?0:1;
+      if(ai!=bi)return ai-bi;return b.getValue().rssi-a.getValue().rssi;
+    });
+    int max=0;for(Map.Entry<String,Sighting> e:items){
+      if(max++>=60)break;
+      String mac=e.getKey();Sighting s=e.getValue();
+      LinearLayout block=col();p(block,12);block.setBackground(shape(PANEL,s.name.startsWith("RC-")?CYAN:LINE,14));
+      LinearLayout line=row();block.addView(line);
+      LinearLayout title=col();title.addView(t(s.name.isEmpty()?"BLE sem nome":s.name,14,WHITE,true));space(title,6);
+      title.addView(t(mac+"   •   "+s.rssi+" dBm",11,GRAY,false));
+      line.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+      line.addView(b(robots.containsKey(mac)?"CONECTAR":"ADICIONAR",s.name.startsWith("RC-")?CYAN:PANEL2,()->{
+        Robot x=robots.get(mac);if(x==null){x=new Robot(mac,s.name.startsWith("RC-")?s.name:"Robô "+(robots.size()+1));robots.put(mac,x);showRobots();save();}
+        connect(x,s.device);refresh();
+      }));
+      results.addView(block);space(results,7);
+    }
+  }
+  boolean hasAccess(){
+    if(Build.VERSION.SDK_INT>=31)return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==PackageManager.PERMISSION_GRANTED
+      &&checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED;
+    return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
+  }
+  void checkAccess(boolean ask){
+    if(!hasAccess()&&ask){
+      if(Build.VERSION.SDK_INT>=31)
+        requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT},22);
+      else requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},22);
+    }
+    if(diagBt!=null)diagnostics();
+  }
+  @Override public void onRequestPermissionsResult(int r,String[] names,int[] outcomes){
+    super.onRequestPermissionsResult(r,names,outcomes);diagnostics();
+    if(r==22&&hasAccess())startSearch();
+  }
+  void diagnostics(){
+    if(diagBt==null)return;
+    boolean on=adapter!=null&&adapter.isEnabled();
+    diagBt.setText("Bluetooth: "+(adapter==null?"não disponível":on?"LIGADO":"DESLIGADO"));
+    diagPerm.setText("Permissão BLE: "+(hasAccess()?"CONCEDIDA":"NÃO CONCEDIDA"));
+    android.location.LocationManager lm=(android.location.LocationManager)getSystemService(LOCATION_SERVICE);
+    boolean loc=lm!=null&&lm.isLocationEnabled();
+    diagLocation.setText("Localização do Android: "+(loc?"ligada":"desligada")+" (em alguns aparelhos afeta o scan)");
+    statusTop.setText("BLE "+(on?"ativado":"desligado")+"   •   "+online()+" / "+robots.size()+" conectados");
+  }
+  void startSearch(){
+    if(!hasAccess()){checkAccess(true);return;}
+    if(adapter==null){toast("Bluetooth indisponível");return;}
+    if(!adapter.isEnabled()){
+      startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
+      scanStatus.setText("Ative o Bluetooth, retorne e toque novamente em BUSCAR TODOS.");
+      return;
+    }
+    if(scanning)return;
+    try{
+      scanner=adapter.getBluetoothLeScanner();
+      if(scanner==null){scanStatus.setText("Scanner BLE indisponível. Reinicie o Bluetooth.");return;}
+      devices.clear();showDevices();
+      scanner.startScan(null,new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+        .setReportDelay(0).build(),callback);
+      scanning=true;scanStatus.setText("Buscando todos os BLE nas proximidades...");
+      h.postDelayed(()->{if(scanning&&devices.isEmpty())scanStatus.setText(
+        "Nenhum BLE detectado: aproxime a placa, verifique permissões e [BLE] ANUNCIANDO.");},9000);
+    }catch(Exception e){scanning=false;scanStatus.setText("Erro de busca: "+e.getMessage());}
+  }
+  void stopSearch(){
+    try{if(scanning&&scanner!=null&&hasAccess())scanner.stopScan(callback);}catch(Exception ignored){}
+    scanning=false;if(scanStatus!=null)scanStatus.setText("Busca encerrada • "+devices.size()+" dispositivos encontrados.");
+  }
+  final ScanCallback callback=new ScanCallback(){
+    @Override public void onScanResult(int type,ScanResult r){
+      if(!hasAccess())return;
+      BluetoothDevice device=r.getDevice();if(device==null)return;
+      String mac=device.getAddress().toUpperCase(Locale.ROOT);
+      String name=r.getScanRecord()==null?null:r.getScanRecord().getDeviceName();
+      if(name==null)try{name=device.getName();}catch(Exception ignored){}
+      if(name==null)name="";
+      final String foundName=name;final int dbm=r.getRssi();
+      h.post(()->{
+        Sighting existing=devices.get(mac);
+        boolean update=existing==null||(!foundName.isEmpty()&&existing.name.isEmpty())||existing.rssi!=dbm;
+        if(existing==null)devices.put(mac,new Sighting(device,foundName,dbm));
+        else{existing.device=device;existing.rssi=dbm;if(!foundName.isEmpty())existing.name=foundName;}
+        Robot known=robots.get(mac);
+        if(known!=null&&!known.connected&&!known.connecting&&known.gatt==null
+          &&SystemClock.elapsedRealtime()-known.lastTry>5000)connect(known,device);
+        if(update&&SystemClock.elapsedRealtime()-lastRedraw>350){lastRedraw=SystemClock.elapsedRealtime();showDevices();}
+        else if(update)h.removeCallbacks(pendingDraw);
+        if(update)h.postDelayed(pendingDraw,500);
+      });
+    }
+    @Override public void onScanFailed(int code){
+      h.post(()->{scanning=false;scanStatus.setText("FALHA DO SCAN BLE: código "+code+
+        " • tente reiniciar Bluetooth e conceder permissões.");});
+    }
+  };
+  final Runnable pendingDraw=()->{lastRedraw=SystemClock.elapsedRealtime();showDevices();};
+  void connect(Robot x,BluetoothDevice device){
+    if(!hasAccess()){checkAccess(true);return;}
+    if(x.gatt!=null||x.connecting)return;
+    x.lastTry=SystemClock.elapsedRealtime();x.connecting=true;x.problem="Conectando...";
+    try{
+      x.gatt=device.connectGatt(this,false,new Gatt(x),BluetoothDevice.TRANSPORT_LE);
+      if(x.gatt==null){x.connecting=false;x.problem="Não foi possível abrir GATT";}
+    }catch(Exception e){x.connecting=false;x.problem=e.getMessage();}
+    showRobots();refresh();
+  }
+  class Gatt extends BluetoothGattCallback{
+    final Robot x;Gatt(Robot robot){x=robot;}
+    @Override public void onConnectionStateChange(BluetoothGatt g,int status,int state){
+      if(status==BluetoothGatt.GATT_SUCCESS&&state==BluetoothProfile.STATE_CONNECTED){
+        h.post(()->{x.connected=true;x.connecting=false;x.problem="Descobrindo serviço RoboCup...";refresh();});
+        try{g.discoverServices();}catch(Exception e){fail(g,"Falhou discoverServices");}
+      }else if(state==BluetoothProfile.STATE_DISCONNECTED||status!=BluetoothGatt.GATT_SUCCESS){
+        fail(g,"Desconectado (GATT "+status+")");
+      }
+    }
+    void fail(BluetoothGatt g,String msg){
+      h.post(()->{
+        x.connected=false;x.connecting=false;x.ready=false;x.wanted=false;x.writing=false;x.cmd=null;x.problem=msg;
+        if(x.gatt==g)x.gatt=null;
+        try{g.close();}catch(Exception ignored){}
+        refresh();
+      });
+    }
+    @Override public void onServicesDiscovered(BluetoothGatt g,int status){
+      BluetoothGattService service=status==BluetoothGatt.GATT_SUCCESS?g.getService(SERVICE):null;
+      if(service==null){fail(g,"ESP sem UUID de serviço RoboCup");try{g.disconnect();}catch(Exception ignored){}return;}
+      BluetoothGattCharacteristic command=service.getCharacteristic(CMD);
+      if(command==null){fail(g,"Característica de comando ausente");return;}
+      x.cmd=command;
+      BluetoothGattCharacteristic state=service.getCharacteristic(STATE);
+      boolean requested=false;
+      if(state!=null){
+        try{
+          g.setCharacteristicNotification(state,true);
+          BluetoothGattDescriptor descriptor=state.getDescriptor(CCCD);
+          if(descriptor!=null){
+            if(Build.VERSION.SDK_INT>=33)
+              requested=g.writeDescriptor(descriptor,BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)==BluetoothStatusCodes.SUCCESS;
+            else {descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);requested=g.writeDescriptor(descriptor);}
+          }
+        }catch(Exception ignored){}
+      }
+      if(!requested)afterSubscribe(g);
+      h.post(()->{x.problem="UUID confirmado • configurando notificações";refresh();});
+    }
+    @Override public void onDescriptorWrite(BluetoothGatt g,BluetoothGattDescriptor d,int status){
+      afterSubscribe(g);
+    }
+    void afterSubscribe(BluetoothGatt g){
+      BluetoothGattService s=g.getService(SERVICE);
+      BluetoothGattCharacteristic mac=s==null?null:s.getCharacteristic(MAC_CHAR);
+      boolean started=false;
+      if(mac!=null)try{started=g.readCharacteristic(mac);}catch(Exception ignored){}
+      if(!started)ready();
+    }
+    @Override public void onCharacteristicRead(BluetoothGatt g,BluetoothGattCharacteristic c,int status){
+      if(status==BluetoothGatt.GATT_SUCCESS&&MAC_CHAR.equals(c.getUuid()))readMac(c.getValue());
+      ready();
+    }
+    @Override public void onCharacteristicRead(BluetoothGatt g,BluetoothGattCharacteristic c,byte[] value,int status){
+      if(status==BluetoothGatt.GATT_SUCCESS&&MAC_CHAR.equals(c.getUuid()))readMac(value);
+      ready();
+    }
+    void readMac(byte[] bytes){
+      if(bytes!=null){String str=new String(bytes,StandardCharsets.UTF_8).trim().toUpperCase(Locale.ROOT);
+        if(BluetoothAdapter.checkBluetoothAddress(str))x.firmwareMac=str;}
+    }
+    void ready(){h.post(()->{
+      x.ready=true;x.connected=true;x.problem="Serviço validado";x.wanted=false;refresh();send(x,"0");
+    });}
+    @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c){
+      received(c.getValue());
+    }
+    @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c,byte[] value){received(value);}
+    void received(byte[] bytes){if(bytes==null)return;
+      String val=new String(bytes,StandardCharsets.UTF_8).trim();
+      if(val.equals("0")||val.equals("1"))h.post(()->{x.state=val;refresh();});}
+    @Override public void onCharacteristicWrite(BluetoothGatt g,BluetoothGattCharacteristic c,int status){
+      h.post(()->{x.writing=false;if(status!=BluetoothGatt.GATT_SUCCESS)x.problem="Falha envio GATT "+status;refresh();});
+    }
+  }
+  void send(Robot x,String value){
+    if(!hasAccess()||!x.ready||x.gatt==null||x.cmd==null||x.writing)return;
+    try{
+      x.writing=true;x.lastWrite=SystemClock.elapsedRealtime();
+      byte[] packet=value.getBytes(StandardCharsets.UTF_8);
+      boolean ok;
+      if(Build.VERSION.SDK_INT>=33)
+        ok=x.gatt.writeCharacteristic(x.cmd,packet,BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)==BluetoothStatusCodes.SUCCESS;
+      else{x.cmd.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);x.cmd.setValue(packet);ok=x.gatt.writeCharacteristic(x.cmd);}
+      if(!ok){x.writing=false;x.problem="Falha ao enviar "+value;}
+    }catch(Exception e){x.writing=false;x.problem="Exceção BLE "+e.getClass().getSimpleName();}
+  }
+  void penalty(Robot x){
+    x.outs++;x.penalizedUntil=SystemClock.elapsedRealtime()+60000;
+    send(x,"0");refresh();save();
+  }
+  void edit(Robot x){
+    LinearLayout container=col();p(container,14);
+    EditText name=new EditText(this);name.setText(x.name);container.addView(name);
+    Spinner team=new Spinner(this);String[] options={"Azul","Vermelho"};
+    team.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,options));
+    team.setSelection(x.team.equals("Azul")?0:1);container.addView(team);
+    new AlertDialog.Builder(this).setTitle("Editar robô").setView(container)
+      .setPositiveButton("Salvar",(d,w)->{x.name=name.getText().toString().trim();
+        if(x.name.isEmpty())x.name="Robô";x.team=team.getSelectedItem().toString();refresh();save();})
+      .setNegativeButton("Cancelar",null).show();
+  }
+  void toggleClock(){
+    if(clockRunning){remaining=(int)Math.max(0,(deadline-SystemClock.elapsedRealtime()+999)/1000);
+      clockRunning=false;clockPaused=true;for(Robot r:robots.values()){r.wanted=false;send(r,"0");}
+    }else{
+      if(remaining<1)remaining=phases.get(phaseIndex).min*60;
+      deadline=SystemClock.elapsedRealtime()+remaining*1000L;clockRunning=true;clockPaused=false;
+    }
+    refresh();
+  }
+  void skip(){
+    for(Robot r:robots.values()){r.wanted=false;send(r,"0");}
+    boolean previously=clockRunning;
+    phaseIndex=(phaseIndex+1)%phases.size();remaining=phases.get(phaseIndex).min*60;
+    clockRunning=previously;
+    if(previously)deadline=SystemClock.elapsedRealtime()+remaining*1000L;
+    refresh();
+  }
+  void configureTime(){
+    final String[] options={"5 min calibração + 10 + 5 + 10","10 + 5 intervalo + 10","Somente 10 minutos","Personalizar duração"};
+    new AlertDialog.Builder(this).setTitle("Formato da partida").setItems(options,(d,which)->{
+      if(which==0)preset(new int[]{5,10,5,10});
+      if(which==1)preset(new int[]{0,10,5,10});
+      if(which==2)preset(new int[]{0,10,0,0});
+      if(which==3)customTime();
+    }).show();
+  }
+  void preset(int[] ms){
+    phases.clear();if(ms[0]>0)phases.add(new Phase("Calibração",ms[0]));
+    if(ms[1]>0)phases.add(new Phase("1º tempo",ms[1]));
+    if(ms[2]>0)phases.add(new Phase("Intervalo",ms[2]));
+    if(ms[3]>0)phases.add(new Phase("2º tempo",ms[3]));
+    phaseIndex=0;remaining=phases.get(0).min*60;clockRunning=false;
+    for(Robot r:robots.values()){r.wanted=false;send(r,"0");}
+    refresh();save();
+  }
+  void customTime(){
+    LinearLayout inputs=col();p(inputs,16);
+    String[] names={"Calibração (min)","1º tempo (min)","Intervalo (min)","2º tempo (min)"};
+    int[] defaults={5,10,5,10};EditText[] fields=new EditText[4];
+    for(int i=0;i<4;i++){inputs.addView(t(names[i],14,Color.DKGRAY,true));
+      EditText e=new EditText(this);e.setInputType(2);e.setText(""+defaults[i]);inputs.addView(e);fields[i]=e;}
+    new AlertDialog.Builder(this).setTitle("Minutos de cada etapa").setView(inputs)
+      .setPositiveButton("Aplicar",(d,w)->{
+        int[] values=new int[4];try{
+          for(int i=0;i<4;i++){values[i]=Integer.parseInt(fields[i].getText().toString());
+            if(values[i]<0||values[i]>120)throw new Exception();}
+          if(values[1]<=0)throw new Exception();preset(values);
+        }catch(Exception e){toast("Informe 1º tempo maior que 0; os demais de 0 a 120.");}
+      }).setNegativeButton("Cancelar",null).show();
+  }
+  void tick(){
+    long now=SystemClock.elapsedRealtime();
+    if(clockRunning){
+      remaining=(int)Math.max(0,(deadline-now+999)/1000);
+      if(remaining==0){
+        if(phaseIndex<phases.size()-1){
+          phaseIndex++;remaining=phases.get(phaseIndex).min*60;deadline=now+remaining*1000L;
+          for(Robot r:robots.values()){r.wanted=false;send(r,"0");}
+        }else{
+          clockRunning=false;for(Robot r:robots.values()){r.wanted=false;send(r,"0");}
+        }
+      }
+    }
+    for(Robot r:robots.values()){
+      if(r.penalizedUntil>0&&now>=r.penalizedUntil)r.penalizedUntil=0;
+      if(r.writing&&now-r.lastWrite>3000){r.writing=false;r.problem="Escrita BLE sem resposta";}
+      boolean interval=clockRunning&&phases.get(phaseIndex).name.equals("Intervalo");
+      boolean want=foreground&&r.wanted&&r.penalizedUntil==0&&!interval;
+      if(r.ready&&!r.writing&&now-r.lastWrite> (want?950:1300) &&(want||r.state.equals("1")))
+        send(r,want?"1":"0");
+    }
+    refresh();h.postDelayed(this::tick,250);
+  }
+  int online(){int n=0;for(Robot x:robots.values())if(x.ready&&x.connected)n++;return n;}
+  void refresh(){
+    if(timer!=null){
+      timer.setText(String.format(Locale.ROOT,"%02d:%02d",remaining/60,remaining%60));
+      phaseName.setText(phases.get(phaseIndex).name+(clockRunning?"   •   EM ANDAMENTO":"   •   PAUSADO"));
+      phaseDetail.setText("Etapa "+(phaseIndex+1)+" de "+phases.size());
+      scoreBlue.setText(String.format(Locale.ROOT,"%02d",blue));
+      scoreRed.setText(String.format(Locale.ROOT,"%02d",red));
+      fleetText.setText(online()+" conectados  /  "+robots.size()+" cadastrados");
+    }
+    for(Robot x:robots.values()){
+      if(x.card==null)continue;
+      long now=SystemClock.elapsedRealtime();
+      boolean penalized=x.penalizedUntil>now;
+      boolean active=x.connected&&x.ready&&x.state.equals("1")&&!penalized;
+      int color=penalized?GOLD:active?RED:x.ready?GREEN:GRAY;
+      int fill=penalized?0xff443820:active?0xff49242E:x.ready?0xff1F4136:PANEL;
+      x.card.setBackground(shape(fill,LINE,16));
+      x.title.setText(x.name);x.sub.setText("TIME "+x.team.toUpperCase(Locale.ROOT)+"   •   "+x.mac);
+      x.indicator.setText(penalized?"PENA "+((x.penalizedUntil-now+999)/1000)+"s":active?"ATIVO 1":x.ready?"PARADO 0":x.connecting?"CONECTANDO":"OFFLINE");
+      x.indicator.setTextColor(color);x.indicator.setBackground(shape(PANEL2,0,10));
+      x.count.setText(x.outs+" saída(s)  •  "+(x.problem.isEmpty()?"BLE aguardando":x.problem)
+        +(x.firmwareMac.isEmpty()?"":" • MAC firmware "+x.firmwareMac));
+    }
+    if(diagBt!=null)diagnostics();
+  }
+  void toast(String msg){Toast.makeText(this,msg,Toast.LENGTH_SHORT).show();}
+  void save(){
+    try{
+      JSONArray a=new JSONArray();for(Robot r:robots.values()){
+        JSONObject o=new JSONObject();o.put("mac",r.mac);o.put("name",r.name);o.put("team",r.team);o.put("outs",r.outs);a.put(o);}
+      JSONArray f=new JSONArray();for(Phase phase:phases){
+        JSONObject o=new JSONObject();o.put("name",phase.name);o.put("min",phase.min);f.put(o);}
+      preferences.edit().putString("robots",a.toString()).putString("phases",f.toString())
+        .putInt("blue",blue).putInt("red",red).apply();
+    }catch(Exception ignored){}
+  }
+  void restore(){
+    blue=preferences.getInt("blue",0);red=preferences.getInt("red",0);
+    try{
+      JSONArray a=new JSONArray(preferences.getString("robots","[]"));
+      for(int i=0;i<a.length();i++){JSONObject o=a.getJSONObject(i);String mac=o.optString("mac","");
+        if(!BluetoothAdapter.checkBluetoothAddress(mac))continue;
+        Robot x=new Robot(mac,o.optString("name","Robô"));x.team=o.optString("team","Azul");
+        x.outs=o.optInt("outs",0);robots.put(mac,x);}
+      JSONArray list=new JSONArray(preferences.getString("phases","[]"));
+      if(list.length()>0){phases.clear();for(int i=0;i<list.length();i++){
+        JSONObject item=list.getJSONObject(i);phases.add(new Phase(item.optString("name","Tempo"),Math.max(1,item.optInt("min",10))));}}
+    }catch(Exception ignored){}
+    if(phases.isEmpty())phases.add(new Phase("1º tempo",10));remaining=phases.get(0).min*60;
+  }
 }
