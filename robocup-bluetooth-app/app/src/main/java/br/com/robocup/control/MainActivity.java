@@ -290,11 +290,11 @@ public class MainActivity extends Activity {
   }
   void diagnostics(){
     if(diagBt==null)return;
-    boolean on=adapter!=null&&adapter.isEnabled();
+    boolean on=false;try{on=adapter!=null&&adapter.isEnabled();}catch(SecurityException ignored){on=false;}
     diagBt.setText("Bluetooth: "+(adapter==null?"não disponível":on?"LIGADO":"DESLIGADO"));
     diagPerm.setText("Permissão BLE: "+(hasAccess()?"CONCEDIDA":"NÃO CONCEDIDA"));
     android.location.LocationManager lm=(android.location.LocationManager)getSystemService(LOCATION_SERVICE);
-    boolean loc=lm!=null&&lm.isLocationEnabled();
+    boolean loc=false;try{loc=lm!=null&&(Build.VERSION.SDK_INT>=28?lm.isLocationEnabled():lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER));}catch(Exception ignored){}
     diagLocation.setText("Localização do Android: "+(loc?"ligada":"desligada")+" (em alguns aparelhos afeta o scan)");
     statusTop.setText("BLE "+(on?"ativado":"desligado")+"   •   "+online()+" / "+robots.size()+" conectados");
   }
