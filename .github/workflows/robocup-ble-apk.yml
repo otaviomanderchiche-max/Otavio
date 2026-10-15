@@ -23,8 +23,10 @@ jobs:
           gradle-version: '8.9'
       - name: Instalar SDK Android
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+          SDKMANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -type f -name sdkmanager | sort -V | tail -1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0'
       - name: Compilar APK
         run: gradle --no-daemon -p robocup-bluetooth-app assembleDebug
       - name: Publicar APK
